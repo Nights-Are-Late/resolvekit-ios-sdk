@@ -1,5 +1,11 @@
 import Foundation
+import SwiftUI
 import Testing
+#if os(iOS)
+import UIKit
+#elseif os(macOS)
+import AppKit
+#endif
 @testable import ResolveKitCore
 @testable import ResolveKitNetworking
 @testable import ResolveKitUI
@@ -543,6 +549,58 @@ struct ResolveKitConfigurationLLMContextTests {
     }
 }
 
+@Suite("UI: hosting controller wrappers")
+struct ResolveKitUIHostingControllerTests {
+    @Test("Hosting controller keeps caller-owned runtime")
+    @MainActor
+    func hostingControllerKeepsCallerOwnedRuntime() {
+        let runtime = makeRuntime()
+        let controller = ResolveKitChatViewController(runtime: runtime)
+
+        #expect(controller.runtime === runtime)
+        #expect(controller.title == "Support Chat")
+    }
+
+    @Test("Hosting controller convenience init creates runtime")
+    @MainActor
+    func hostingControllerConvenienceInitCreatesRuntime() {
+        let controller = ResolveKitChatViewController(configuration: ResolveKitConfiguration(apiKeyProvider: { "key" }))
+
+        #expect(controller.runtime.chatTitle == "Support Chat")
+        #expect(controller.title == "Support Chat")
+    }
+
+    @Test("Hosting controller title follows runtime chat title")
+    @MainActor
+    func hostingControllerTitleFollowsRuntimeChatTitle() async {
+        let runtime = makeRuntime()
+        let controller = ResolveKitChatViewController(runtime: runtime)
+
+        runtime._debugSetChatTitle("Concierge")
+        await Task.yield()
+
+        #expect(controller.title == "Concierge")
+    }
+
+    #if os(iOS)
+    @Test("Hosting controller uses UIKit superclass")
+    @MainActor
+    func hostingControllerUsesUIKitSuperclass() {
+        let controller = ResolveKitChatViewController(runtime: makeRuntime())
+        let base: UIHostingController<ResolveKitChatView> = controller
+        #expect(base === controller)
+    }
+    #elseif os(macOS)
+    @Test("Hosting controller uses AppKit superclass")
+    @MainActor
+    func hostingControllerUsesAppKitSuperclass() {
+        let controller = ResolveKitChatViewController(runtime: makeRuntime())
+        let base: NSHostingController<ResolveKitChatView> = controller
+        #expect(base === controller)
+    }
+    #endif
+}
+
 @Suite("Locale resolver")
 struct ResolveKitLocaleResolverTests {
     @Test("Resolves explicit locale aliases")
@@ -637,7 +695,7 @@ struct SlowFunction: AnyResolveKitFunction {
     ]
 
     static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
-        try await Task.sleep(for: .seconds(3))
+        try await Task.sleep(nanoseconds: 3_000_000_000)
         return .string("done")
     }
 }

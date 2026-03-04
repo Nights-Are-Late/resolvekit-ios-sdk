@@ -6,9 +6,9 @@ ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS
 
 ## Requirements
 
-- iOS 17+ / macOS 14+
-- Swift 6.0+
-- Xcode 16+
+- iOS 16+ / macOS 12+
+- Swift 5.9+ toolchain
+- Xcode 15.0+
 - A running [ResolveKit backend](https://github.com/nedasvi/playbook_backend) with a valid API key
 
 ---
@@ -39,6 +39,8 @@ targets: [
 ]
 ```
 
+The package can be integrated into apps that remain in Swift 5 language mode, as long as the project is built with a Swift 5.9-or-newer toolchain.
+
 ### Product linking in Xcode
 
 If your app integrates chat UI, link only `ResolveKitUI` in the app target.
@@ -52,28 +54,20 @@ If your app integrates chat UI, link only `ResolveKitUI` in the app target.
 
 ## Minimum Viable Integration
 
-Three steps to get a working chat view with one tool function.
+Three steps to get a working chat runtime with one tool function, then embed it in SwiftUI, UIKit, or AppKit.
 
 ### Step 1: Define a function
 
 ```swift
-import ResolveKitCore
+import ResolveKitAuthoring
 
-struct GetLocalTime: AnyResolveKitFunction {
-    static let resolveKitName = "get_local_time"
-    static let resolveKitDescription = "Returns the current local time."
-    static let resolveKitRequiresApproval = false
-    static let resolveKitTimeoutSeconds: Int? = 10
-    static let resolveKitParametersSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([:])
-    ]
-
-    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
+@ResolveKit(name: "get_local_time", description: "Returns the current local time.", timeout: 10, requiresApproval: false)
+struct GetLocalTime: ResolveKitFunction {
+    func perform() async throws -> String {
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = .current
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return .string(formatter.string(from: Date()))
+        return formatter.string(from: Date())
     }
 }
 ```
@@ -89,7 +83,9 @@ let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
 ))
 ```
 
-### Step 3: Show the chat view
+### Step 3: Embed the chat UI
+
+#### SwiftUI
 
 ```swift
 import SwiftUI
@@ -109,78 +105,107 @@ struct ContentView: View {
 
 `ResolveKitChatView` calls `runtime.start()` automatically when it appears. It handles connection state, streaming text, tool approval UI, and the message composer.
 
----
+#### UIKit
 
-## Defining Functions
-
-There are two patterns for defining tool functions: manual conformance and the `@ResolveKit` macro.
-
-### Pattern A: Manual conformance (`AnyResolveKitFunction`)
-
-Use this pattern when consuming the public binary SDK, or when you need custom JSON schemas or dynamic dispatch.
-
-Import `ResolveKitCore` and conform your struct to `AnyResolveKitFunction`:
+Use `ResolveKitChatViewController` when your app is built around `UIViewController`.
 
 ```swift
-import ResolveKitCore
+import UIKit
+import ResolveKitUI
 
-struct SetLights: AnyResolveKitFunction {
-    static let resolveKitName = "set_lights"
-    static let resolveKitDescription = "Turn lights on or off in a room"
-    static let resolveKitRequiresApproval = true          // default; omit to use true
-    static let resolveKitTimeoutSeconds: Int? = 30
-    static let resolveKitParametersSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([
-            "room": .object(["type": .string("string")]),
-            "on":   .object(["type": .string("boolean")])
-        ]),
-        "required": .array([.string("room"), .string("on")])
-    ]
+final class ChatHostViewController: UIViewController {
+    private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
+        apiKeyProvider: { "iaa_your_api_key" },
+        functions: [GetLocalTime.self]
+    ))
 
-    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
-        guard
-            let room = arguments["room"].flatMap(TypeResolver.coerceString),
-            let on   = arguments["on"].flatMap(TypeResolver.coerceBool)
-        else {
-            throw ResolveKitFunctionError.invalidArguments("Expected room:String and on:Bool")
-        }
-        return .string("Set \(room) lights to \(on ? 100 : 0)%")
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let chat = ResolveKitChatViewController(runtime: runtime)
+        addChild(chat)
+        chat.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(chat.view)
+        NSLayoutConstraint.activate([
+            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
+            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        chat.didMove(toParent: self)
     }
 }
 ```
 
-**Required static members:**
-
-| Member | Type | Required | Default | Purpose |
-|--------|------|----------|---------|---------|
-| `resolveKitName` | `String` | Yes | — | Function identifier sent to the LLM. Use `snake_case`. |
-| `resolveKitDescription` | `String` | Yes | — | Plain-English description the LLM uses to decide when to call this function. |
-| `resolveKitParametersSchema` | `JSONObject` | Yes | — | JSON Schema object describing the function's input parameters. |
-| `resolveKitRequiresApproval` | `Bool` | No | `true` | If `true`, the SDK shows an approval UI before executing. Set to `false` for read-only, non-destructive tools. |
-| `resolveKitTimeoutSeconds` | `Int?` | No | `nil` | Seconds before the tool call is considered failed. `nil` uses the backend's global setting. |
-
-**`invoke` signature:**
+Convenience init:
 
 ```swift
-static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue
+let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
+    apiKeyProvider: { "iaa_your_api_key" },
+    functions: [GetLocalTime.self]
+))
 ```
 
-`arguments` is a `[String: JSONValue]` dictionary matching the schema you declared. `context` carries session metadata (not currently used in most tools). Return any `JSONValue`; throw `ResolveKitFunctionError` on invalid input.
+`ResolveKitChatViewController` is a thin `UIHostingController` wrapper around `ResolveKitChatView`. The hosted view still starts the runtime automatically when it appears.
 
-### Pattern B: `@ResolveKit` macro (source-only distributions)
+#### AppKit
 
-Use this pattern when consuming the private source repo with `ResolveKitAuthoring`. The macro generates the `Input` struct, JSON schema, and `invoke` dispatch boilerplate from a typed `perform` method.
+Use `ResolveKitChatViewController` when your macOS app is built around `NSViewController`.
+
+```swift
+import AppKit
+import ResolveKitUI
+
+final class ChatHostViewController: NSViewController {
+    private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
+        apiKeyProvider: { "iaa_your_api_key" },
+        functions: [GetLocalTime.self]
+    ))
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let chat = ResolveKitChatViewController(runtime: runtime)
+        addChild(chat)
+        chat.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(chat.view)
+        NSLayoutConstraint.activate([
+            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
+            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        chat.didMove(toParent: self)
+    }
+}
+```
+
+Convenience init:
+
+```swift
+let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
+    apiKeyProvider: { "iaa_your_api_key" },
+    functions: [GetLocalTime.self]
+))
+```
+
+On macOS, `ResolveKitChatViewController` is a thin `NSHostingController` wrapper around `ResolveKitChatView`. The hosted view still starts the runtime automatically when it appears.
+
+---
+
+## Defining Functions
+
+There are two patterns for defining tool functions. For most open-source integrations, start with the `@ResolveKit` macro. Use manual `AnyResolveKitFunction` conformance only when you need lower-level control over schemas or dispatch.
+
+### Pattern A: `@ResolveKit` macro (recommended)
+
+Use this pattern when you want the shortest path from a typed Swift API to a registered ResolveKit tool. The macro generates the `Input` struct, JSON schema, and `invoke` dispatch boilerplate from a typed `perform` method.
 
 Import `ResolveKitAuthoring`:
 
 ```swift
 import ResolveKitAuthoring
-```
 
-**Macro signature:**
-
-```swift
 @ResolveKit(name: String, description: String, timeout: Int? = nil, requiresApproval: Bool = true)
 ```
 
@@ -244,6 +269,59 @@ struct SendMessage: ResolveKitFunction {
 
 extension SendMessage: AnyResolveKitFunction {}
 ```
+
+### Pattern B: Manual conformance (`AnyResolveKitFunction`)
+
+Use this pattern when you need custom JSON schemas, bespoke argument coercion, or dynamic dispatch that does not map cleanly to a typed `perform` method.
+
+Import `ResolveKitCore` and conform your struct to `AnyResolveKitFunction`:
+
+```swift
+import ResolveKitCore
+
+struct SetLights: AnyResolveKitFunction {
+    static let resolveKitName = "set_lights"
+    static let resolveKitDescription = "Turn lights on or off in a room"
+    static let resolveKitRequiresApproval = true          // default; omit to use true
+    static let resolveKitTimeoutSeconds: Int? = 30
+    static let resolveKitParametersSchema: JSONObject = [
+        "type": .string("object"),
+        "properties": .object([
+            "room": .object(["type": .string("string")]),
+            "on":   .object(["type": .string("boolean")])
+        ]),
+        "required": .array([.string("room"), .string("on")])
+    ]
+
+    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
+        guard
+            let room = arguments["room"].flatMap(TypeResolver.coerceString),
+            let on   = arguments["on"].flatMap(TypeResolver.coerceBool)
+        else {
+            throw ResolveKitFunctionError.invalidArguments("Expected room:String and on:Bool")
+        }
+        return .string("Set \(room) lights to \(on ? 100 : 0)%")
+    }
+}
+```
+
+**Required static members:**
+
+| Member | Type | Required | Default | Purpose |
+|--------|------|----------|---------|---------|
+| `resolveKitName` | `String` | Yes | — | Function identifier sent to the LLM. Use `snake_case`. |
+| `resolveKitDescription` | `String` | Yes | — | Plain-English description the LLM uses to decide when to call this function. |
+| `resolveKitParametersSchema` | `JSONObject` | Yes | — | JSON Schema object describing the function's input parameters. |
+| `resolveKitRequiresApproval` | `Bool` | No | `true` | If `true`, the SDK shows an approval UI before executing. Set to `false` for read-only, non-destructive tools. |
+| `resolveKitTimeoutSeconds` | `Int?` | No | `nil` | Seconds before the tool call is considered failed. `nil` uses the backend's global setting. |
+
+**`invoke` signature:**
+
+```swift
+static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue
+```
+
+`arguments` is a `[String: JSONValue]` dictionary matching the schema you declared. `context` carries session metadata (not currently used in most tools). Return any `JSONValue`; throw `ResolveKitFunctionError` on invalid input.
 
 ---
 
@@ -412,7 +490,7 @@ Optional groups of tool functions defined in a dedicated module. See [Function P
 
 ## Runtime API
 
-`ResolveKitRuntime` is a `@MainActor ObservableObject`. All published properties update on the main thread and are safe to bind directly in SwiftUI views.
+`ResolveKitRuntime` is a `@MainActor ObservableObject`. All published properties update on the main thread and are safe to bind directly in SwiftUI views or through `ResolveKitChatViewController` in UIKit/AppKit hosts.
 
 ### Published properties
 
@@ -595,7 +673,7 @@ Sources/
   ResolveKitCore/        Protocols, registry, JSON types, TypeResolver, macro declaration
   ResolveKitMacros/      Swift compiler plugin — @ResolveKit expansion
   ResolveKitNetworking/  HTTP (function registration, session), WebSocket, SSE fallback
-  ResolveKitUI/          ResolveKitRuntime (ObservableObject), ResolveKitChatView, Configuration
+  ResolveKitUI/          ResolveKitRuntime, ResolveKitChatView, ResolveKitChatViewController, Configuration
   ResolveKitCodegen/     Build-time CLI that generates ResolveKitAutoRegistry.swift
 Plugins/
   ResolveKitPlugin/      SPM build tool plugin — runs ResolveKitCodegen at build time
@@ -610,8 +688,8 @@ Import only what you need:
 | Import | Gives you |
 |--------|-----------|
 | `ResolveKitCore` | Runtime-safe protocols, registry, JSON/value types |
-| `ResolveKitAuthoring` | Optional source-only macro layer for private/internal distributions |
-| `ResolveKitUI` | `ResolveKitRuntime`, `ResolveKitChatView`, `ResolveKitConfiguration` — for app code |
+| `ResolveKitAuthoring` | Macro authoring layer for defining tools with typed `perform` methods |
+| `ResolveKitUI` | `ResolveKitRuntime`, `ResolveKitChatView`, `ResolveKitChatViewController`, `ResolveKitConfiguration` — for app code |
 
 `ResolveKitUI` re-exports `ResolveKitCore` transitively, so most app targets only need `import ResolveKitUI`.
 

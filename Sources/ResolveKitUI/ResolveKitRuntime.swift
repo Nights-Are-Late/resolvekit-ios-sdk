@@ -148,7 +148,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private var activeAssistantDraft = ""
     private var activeAssistantMessageID: UUID?
 
-    private let toolBatchCoalescingDelay: Duration = .milliseconds(250)
+    private let toolBatchCoalescingDelayMilliseconds: UInt64 = 250
     private var collectingToolCalls: [ResolveKitToolCallRequest] = []
     private var collectionTask: Task<Void, Never>?
     private var queuedBatches: [[ResolveKitToolCallRequest]] = []
@@ -228,7 +228,7 @@ public final class ResolveKitRuntime: ObservableObject {
             guard let self else { return }
             let delay = min(pow(2.0, Double(attempt)), Self.maxReconnectDelay)
             ResolveKitRuntimeLogger.log("Reconnect in \(Int(delay))s (attempt \(attempt + 1))")
-            try? await Task.sleep(for: .seconds(delay))
+            await ResolveKitCompatibility.sleep(seconds: delay)
             guard !Task.isCancelled else { return }
             guard self.connectionState == .reconnecting || self.connectionState == .failed else { return }
             self.connectionState = .reconnecting
@@ -724,11 +724,11 @@ public final class ResolveKitRuntime: ObservableObject {
     private func enqueueToolCallRequest(_ request: ResolveKitToolCallRequest) {
         collectingToolCalls.append(request)
         guard collectionTask == nil else { return }
-        let delay = toolBatchCoalescingDelay
+        let delayMilliseconds = toolBatchCoalescingDelayMilliseconds
 
-        collectionTask = Task { [weak self, delay] in
+        collectionTask = Task { [weak self, delayMilliseconds] in
             guard let self else { return }
-            try? await Task.sleep(for: delay)
+            await ResolveKitCompatibility.sleep(milliseconds: delayMilliseconds)
             await MainActor.run {
                 self.flushCollectedToolCalls()
             }
@@ -857,7 +857,7 @@ public final class ResolveKitRuntime: ObservableObject {
             }
             group.addTask { [weak self] in
                 let timeoutSeconds = call.timeoutSeconds
-                try? await Task.sleep(for: .seconds(timeoutSeconds))
+                await ResolveKitCompatibility.sleep(seconds: timeoutSeconds)
                 guard let self else {
                     return .failed(callID: call.callID, error: "Runtime deallocated")
                 }
@@ -1118,7 +1118,7 @@ extension ResolveKitRuntime {
     }
 
     func _debugWaitForCoalescingWindow() async {
-        try? await Task.sleep(for: toolBatchCoalescingDelay + .milliseconds(80))
+        await ResolveKitCompatibility.sleep(milliseconds: toolBatchCoalescingDelayMilliseconds + 80)
         flushCollectedToolCalls()
     }
 
@@ -1138,6 +1138,10 @@ extension ResolveKitRuntime {
 
     func _debugHandleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
         await handleServerEnvelope(envelope)
+    }
+
+    func _debugSetChatTitle(_ title: String) {
+        chatTitle = title
     }
 }
 #endif
