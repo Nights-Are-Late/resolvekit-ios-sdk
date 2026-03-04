@@ -59,23 +59,15 @@ Three steps to get a working chat runtime with one tool function, then embed it 
 ### Step 1: Define a function
 
 ```swift
-import ResolveKitCore
+import ResolveKitAuthoring
 
-struct GetLocalTime: AnyResolveKitFunction {
-    static let resolveKitName = "get_local_time"
-    static let resolveKitDescription = "Returns the current local time."
-    static let resolveKitRequiresApproval = false
-    static let resolveKitTimeoutSeconds: Int? = 10
-    static let resolveKitParametersSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([:])
-    ]
-
-    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
+@ResolveKit(name: "get_local_time", description: "Returns the current local time.", timeout: 10, requiresApproval: false)
+struct GetLocalTime: ResolveKitFunction {
+    func perform() async throws -> String {
         let formatter = ISO8601DateFormatter()
         formatter.timeZone = .current
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return .string(formatter.string(from: Date()))
+        return formatter.string(from: Date())
     }
 }
 ```
