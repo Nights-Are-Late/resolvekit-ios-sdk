@@ -105,6 +105,7 @@ public struct ResolveKitMacro: MemberMacro, ExtensionMacro {
             let schemaExpr = jsonSchemaExpression(for: paramType)
             return "            \"\(paramName)\": .object(\(schemaExpr))"
         }.joined(separator: ",\n")
+        let schemaPropertiesLiteral = schemaProperties.isEmpty ? "[:]" : "[\n\(schemaProperties)\n        ]"
 
         // Only non-optional params are required
         let requiredList = params.compactMap { (paramName, paramType) in
@@ -175,9 +176,7 @@ public struct ResolveKitMacro: MemberMacro, ExtensionMacro {
         let schemaSource: DeclSyntax = """
         public static let resolveKitParametersSchema: JSONObject = [
             "type": .string("object"),
-            "properties": .object([
-        \(raw: schemaProperties)
-            ]),
+            "properties": .object(\(raw: schemaPropertiesLiteral)),
             "required": .array([\(raw: requiredList)])
         ]
         """
