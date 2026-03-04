@@ -118,10 +118,10 @@ struct ResolveKitSourceReleaseContractTests {
         #expect(!package.contains(".target(\n            name: \"ResolveKitCore\",\n            dependencies: [\n                \"ResolveKitMacros\"\n            ]\n        )"))
     }
 
-    @Test("README package example references the 0.1.0 source release")
+    @Test("README package example references the 1.0.1 source release")
     func readmeReferencesSourceRelease() throws {
         let readme = try String(contentsOf: sdkRoot.appending(path: "README.md"))
-        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"0.1.0\")"))
+        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"1.0.1\")"))
     }
 
     @Test("Package remains source-based without binary targets")
