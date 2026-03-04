@@ -103,8 +103,8 @@ struct ResolveKitDefinitionTests {
     }
 }
 
-@Suite("Binary distribution contract")
-struct ResolveKitBinaryDistributionContractTests {
+@Suite("Source release contract")
+struct ResolveKitSourceReleaseContractTests {
 
     @Test("Core target is runtime-only and authoring is split out")
     func packageSeparatesAuthoringFromCore() throws {
@@ -118,92 +118,41 @@ struct ResolveKitBinaryDistributionContractTests {
         #expect(!package.contains(".target(\n            name: \"ResolveKitCore\",\n            dependencies: [\n                \"ResolveKitMacros\"\n            ]\n        )"))
     }
 
-    @Test("Public wrapper package is binary-only")
-    func publicWrapperPackageIsBinaryOnly() throws {
+    @Test("README package example references the 0.1.0 source release")
+    func readmeReferencesSourceRelease() throws {
+        let readme = try String(contentsOf: sdkRoot.appending(path: "README.md"))
+        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"0.1.0\")"))
+    }
+
+    @Test("Package remains source-based without binary targets")
+    func packageRemainsSourceBased() throws {
+        let package = try String(contentsOf: sdkRoot.appending(path: "Package.swift"))
+        #expect(!package.contains(".binaryTarget("))
+        #expect(package.contains(".library(name: \"ResolveKitCore\", type: .dynamic, targets: [\"ResolveKitCore\"])"))
+        #expect(package.contains(".library(name: \"ResolveKitNetworking\", type: .dynamic, targets: [\"ResolveKitNetworking\"])"))
+        #expect(package.contains(".library(name: \"ResolveKitUI\", type: .dynamic, targets: [\"ResolveKitUI\"])"))
+    }
+
+    @Test("Repository does not ship a binary wrapper package")
+    func repositoryOmitsBinaryWrapperPackage() {
         let wrapperPackageURL = sdkRoot
             .appending(path: "distribution")
             .appending(path: "public-sdk")
             .appending(path: "Package.swift")
-        let package = try String(contentsOf: wrapperPackageURL)
-        #expect(package.contains(".binaryTarget("))
-        #expect(package.contains("ResolveKitCore"))
-        #expect(package.contains("ResolveKitNetworking"))
-        #expect(package.contains("ResolveKitUI"))
-        #expect(!package.contains("ResolveKitMacros"))
-        #expect(!package.contains("ResolveKitPlugin"))
-        #expect(!package.contains("ResolveKitCodegen"))
+        #expect(FileManager.default.fileExists(atPath: wrapperPackageURL.path) == false)
     }
 
-    @Test("Release script builds only runtime XCFrameworks")
-    func releaseScriptTargetsRuntimeModules() throws {
-        let scriptURL = sdkRoot
+    @Test("Repository does not require binary release scripts")
+    func repositoryOmitsBinaryReleaseScripts() {
+        let binaryReleaseScript = sdkRoot
             .appending(path: "scripts")
             .appending(path: "build-binary-release.sh")
-        let script = try String(contentsOf: scriptURL)
-        #expect(script.contains("ResolveKitCore"))
-        #expect(script.contains("ResolveKitNetworking"))
-        #expect(script.contains("ResolveKitUI"))
-        #expect(!script.contains("ResolveKitMacros"))
-        #expect(!script.contains("ResolveKitPlugin"))
-        #expect(!script.contains("ResolveKitCodegen"))
-    }
-
-    @Test("Release script supports optional signing and verification")
-    func releaseScriptSupportsOptionalSigningAndVerification() throws {
-        let scriptURL = sdkRoot
-            .appending(path: "scripts")
-            .appending(path: "build-binary-release.sh")
-        let script = try String(contentsOf: scriptURL)
-        #expect(script.contains("SIGNING_IDENTITY"))
-        #expect(script.contains("codesign --force --sign"))
-        #expect(script.contains("codesign -dv --verbose=4"))
-        #expect(script.contains("swift package compute-checksum"))
-    }
-
-    @Test("Release script supports local env configuration")
-    func releaseScriptSupportsLocalEnvConfiguration() throws {
-        let scriptURL = sdkRoot
-            .appending(path: "scripts")
-            .appending(path: "build-binary-release.sh")
-        let gitignoreURL = sdkRoot.appending(path: ".gitignore")
-        let script = try String(contentsOf: scriptURL)
-        let gitignore = try String(contentsOf: gitignoreURL)
-
-        #expect(script.contains(".env.release"))
-        #expect(script.contains("set -a"))
-        #expect(script.contains("source"))
-        #expect(gitignore.contains(".env.release"))
-    }
-
-    @Test("GitHub release script builds then publishes runtime artifacts")
-    func githubReleaseScriptBuildsThenPublishesRuntimeArtifacts() throws {
-        let scriptURL = sdkRoot
+        let githubReleaseScript = sdkRoot
             .appending(path: "scripts")
             .appending(path: "build-and-release-github.sh")
-        let script = try String(contentsOf: scriptURL)
 
-        #expect(script.contains("./scripts/build-binary-release.sh"))
-        #expect(script.contains("gh release view"))
-        #expect(script.contains("gh release upload"))
-        #expect(script.contains("--clobber"))
-        #expect(script.contains("gh release create"))
-        #expect(script.contains("ResolveKitCore.artifactbundle.zip"))
-        #expect(script.contains("ResolveKitNetworking.artifactbundle.zip"))
-        #expect(script.contains("ResolveKitUI.artifactbundle.zip"))
-    }
-
-    @Test("GitHub release script creates and pushes annotated internal tags")
-    func githubReleaseScriptCreatesAndPushesAnnotatedInternalTags() throws {
-        let scriptURL = sdkRoot
-            .appending(path: "scripts")
-            .appending(path: "build-and-release-github.sh")
-        let script = try String(contentsOf: scriptURL)
-
-        #expect(script.contains("git rev-parse"))
-        #expect(script.contains("git tag -a"))
-        #expect(script.contains("TAG_REMOTE"))
-        #expect(script.contains("refs/tags/${VERSION}"))
-        #expect(script.contains("Internal SDK release"))
+        #expect(FileManager.default.fileExists(atPath: binaryReleaseScript.path) == false)
+        #expect(FileManager.default.fileExists(atPath: githubReleaseScript.path) == false)
     }
 
     private var sdkRoot: URL {
