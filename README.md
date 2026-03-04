@@ -203,74 +203,17 @@ On macOS, `ResolveKitChatViewController` is a thin `NSHostingController` wrapper
 
 ## Defining Functions
 
-There are two patterns for defining tool functions: manual conformance and the `@ResolveKit` macro.
+There are two patterns for defining tool functions. For most open-source integrations, start with the `@ResolveKit` macro. Use manual `AnyResolveKitFunction` conformance only when you need lower-level control over schemas or dispatch.
 
-### Pattern A: Manual conformance (`AnyResolveKitFunction`)
+### Pattern A: `@ResolveKit` macro (recommended)
 
-Use this pattern when consuming the public binary SDK, or when you need custom JSON schemas or dynamic dispatch.
-
-Import `ResolveKitCore` and conform your struct to `AnyResolveKitFunction`:
-
-```swift
-import ResolveKitCore
-
-struct SetLights: AnyResolveKitFunction {
-    static let resolveKitName = "set_lights"
-    static let resolveKitDescription = "Turn lights on or off in a room"
-    static let resolveKitRequiresApproval = true          // default; omit to use true
-    static let resolveKitTimeoutSeconds: Int? = 30
-    static let resolveKitParametersSchema: JSONObject = [
-        "type": .string("object"),
-        "properties": .object([
-            "room": .object(["type": .string("string")]),
-            "on":   .object(["type": .string("boolean")])
-        ]),
-        "required": .array([.string("room"), .string("on")])
-    ]
-
-    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
-        guard
-            let room = arguments["room"].flatMap(TypeResolver.coerceString),
-            let on   = arguments["on"].flatMap(TypeResolver.coerceBool)
-        else {
-            throw ResolveKitFunctionError.invalidArguments("Expected room:String and on:Bool")
-        }
-        return .string("Set \(room) lights to \(on ? 100 : 0)%")
-    }
-}
-```
-
-**Required static members:**
-
-| Member | Type | Required | Default | Purpose |
-|--------|------|----------|---------|---------|
-| `resolveKitName` | `String` | Yes | — | Function identifier sent to the LLM. Use `snake_case`. |
-| `resolveKitDescription` | `String` | Yes | — | Plain-English description the LLM uses to decide when to call this function. |
-| `resolveKitParametersSchema` | `JSONObject` | Yes | — | JSON Schema object describing the function's input parameters. |
-| `resolveKitRequiresApproval` | `Bool` | No | `true` | If `true`, the SDK shows an approval UI before executing. Set to `false` for read-only, non-destructive tools. |
-| `resolveKitTimeoutSeconds` | `Int?` | No | `nil` | Seconds before the tool call is considered failed. `nil` uses the backend's global setting. |
-
-**`invoke` signature:**
-
-```swift
-static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue
-```
-
-`arguments` is a `[String: JSONValue]` dictionary matching the schema you declared. `context` carries session metadata (not currently used in most tools). Return any `JSONValue`; throw `ResolveKitFunctionError` on invalid input.
-
-### Pattern B: `@ResolveKit` macro (source-only distributions)
-
-Use this pattern when consuming the private source repo with `ResolveKitAuthoring`. The macro generates the `Input` struct, JSON schema, and `invoke` dispatch boilerplate from a typed `perform` method.
+Use this pattern when you want the shortest path from a typed Swift API to a registered ResolveKit tool. The macro generates the `Input` struct, JSON schema, and `invoke` dispatch boilerplate from a typed `perform` method.
 
 Import `ResolveKitAuthoring`:
 
 ```swift
 import ResolveKitAuthoring
-```
 
-**Macro signature:**
-
-```swift
 @ResolveKit(name: String, description: String, timeout: Int? = nil, requiresApproval: Bool = true)
 ```
 
@@ -334,6 +277,59 @@ struct SendMessage: ResolveKitFunction {
 
 extension SendMessage: AnyResolveKitFunction {}
 ```
+
+### Pattern B: Manual conformance (`AnyResolveKitFunction`)
+
+Use this pattern when you need custom JSON schemas, bespoke argument coercion, or dynamic dispatch that does not map cleanly to a typed `perform` method.
+
+Import `ResolveKitCore` and conform your struct to `AnyResolveKitFunction`:
+
+```swift
+import ResolveKitCore
+
+struct SetLights: AnyResolveKitFunction {
+    static let resolveKitName = "set_lights"
+    static let resolveKitDescription = "Turn lights on or off in a room"
+    static let resolveKitRequiresApproval = true          // default; omit to use true
+    static let resolveKitTimeoutSeconds: Int? = 30
+    static let resolveKitParametersSchema: JSONObject = [
+        "type": .string("object"),
+        "properties": .object([
+            "room": .object(["type": .string("string")]),
+            "on":   .object(["type": .string("boolean")])
+        ]),
+        "required": .array([.string("room"), .string("on")])
+    ]
+
+    static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
+        guard
+            let room = arguments["room"].flatMap(TypeResolver.coerceString),
+            let on   = arguments["on"].flatMap(TypeResolver.coerceBool)
+        else {
+            throw ResolveKitFunctionError.invalidArguments("Expected room:String and on:Bool")
+        }
+        return .string("Set \(room) lights to \(on ? 100 : 0)%")
+    }
+}
+```
+
+**Required static members:**
+
+| Member | Type | Required | Default | Purpose |
+|--------|------|----------|---------|---------|
+| `resolveKitName` | `String` | Yes | — | Function identifier sent to the LLM. Use `snake_case`. |
+| `resolveKitDescription` | `String` | Yes | — | Plain-English description the LLM uses to decide when to call this function. |
+| `resolveKitParametersSchema` | `JSONObject` | Yes | — | JSON Schema object describing the function's input parameters. |
+| `resolveKitRequiresApproval` | `Bool` | No | `true` | If `true`, the SDK shows an approval UI before executing. Set to `false` for read-only, non-destructive tools. |
+| `resolveKitTimeoutSeconds` | `Int?` | No | `nil` | Seconds before the tool call is considered failed. `nil` uses the backend's global setting. |
+
+**`invoke` signature:**
+
+```swift
+static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue
+```
+
+`arguments` is a `[String: JSONValue]` dictionary matching the schema you declared. `context` carries session metadata (not currently used in most tools). Return any `JSONValue`; throw `ResolveKitFunctionError` on invalid input.
 
 ---
 
@@ -700,7 +696,7 @@ Import only what you need:
 | Import | Gives you |
 |--------|-----------|
 | `ResolveKitCore` | Runtime-safe protocols, registry, JSON/value types |
-| `ResolveKitAuthoring` | Optional source-only macro layer for private/internal distributions |
+| `ResolveKitAuthoring` | Macro authoring layer for defining tools with typed `perform` methods |
 | `ResolveKitUI` | `ResolveKitRuntime`, `ResolveKitChatView`, `ResolveKitChatViewController`, `ResolveKitConfiguration` — for app code |
 
 `ResolveKitUI` re-exports `ResolveKitCore` transitively, so most app targets only need `import ResolveKitUI`.

@@ -103,8 +103,8 @@ struct ResolveKitDefinitionTests {
     }
 }
 
-@Suite("Source release contract")
-struct ResolveKitSourceReleaseContractTests {
+@Suite("Open-source package contract")
+struct ResolveKitOpenSourcePackageContractTests {
 
     @Test("Core target is runtime-only and authoring is split out")
     func packageSeparatesAuthoringFromCore() throws {
@@ -131,7 +131,7 @@ struct ResolveKitSourceReleaseContractTests {
         #expect(readme.contains("apps that remain in Swift 5 language mode"))
     }
 
-    @Test("Package remains source-based without binary targets")
+    @Test("Package remains source-based without alternate packaged targets")
     func packageRemainsSourceBased() throws {
         let package = try String(contentsOf: sdkRoot.appendingPathComponent("Package.swift"))
         #expect(!package.contains(".binaryTarget("))
@@ -140,26 +140,26 @@ struct ResolveKitSourceReleaseContractTests {
         #expect(package.contains(".library(name: \"ResolveKitUI\", type: .dynamic, targets: [\"ResolveKitUI\"])"))
     }
 
-    @Test("Repository does not ship a binary wrapper package")
-    func repositoryOmitsBinaryWrapperPackage() {
-        let wrapperPackageURL = sdkRoot
+    @Test("Repository omits the legacy wrapper package")
+    func repositoryOmitsLegacyWrapperPackage() {
+        let legacyWrapperPackageURL = sdkRoot
             .appendingPathComponent("distribution")
             .appendingPathComponent("public-sdk")
             .appendingPathComponent("Package.swift")
-        #expect(FileManager.default.fileExists(atPath: wrapperPackageURL.path) == false)
+        #expect(FileManager.default.fileExists(atPath: legacyWrapperPackageURL.path) == false)
     }
 
-    @Test("Repository does not require binary release scripts")
-    func repositoryOmitsBinaryReleaseScripts() {
-        let binaryReleaseScript = sdkRoot
+    @Test("Repository omits legacy packaging scripts")
+    func repositoryOmitsLegacyPackagingScripts() {
+        let legacyPackagingScript = sdkRoot
             .appendingPathComponent("scripts")
             .appendingPathComponent("build-binary-release.sh")
-        let githubReleaseScript = sdkRoot
+        let legacyGitHubReleaseScript = sdkRoot
             .appendingPathComponent("scripts")
             .appendingPathComponent("build-and-release-github.sh")
 
-        #expect(FileManager.default.fileExists(atPath: binaryReleaseScript.path) == false)
-        #expect(FileManager.default.fileExists(atPath: githubReleaseScript.path) == false)
+        #expect(FileManager.default.fileExists(atPath: legacyPackagingScript.path) == false)
+        #expect(FileManager.default.fileExists(atPath: legacyGitHubReleaseScript.path) == false)
     }
 
     private var sdkRoot: URL {
