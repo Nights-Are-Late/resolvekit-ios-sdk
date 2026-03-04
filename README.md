@@ -54,7 +54,7 @@ If your app integrates chat UI, link only `ResolveKitUI` in the app target.
 
 ## Minimum Viable Integration
 
-Three steps to get a working chat view with one tool function.
+Three steps to get a working chat runtime with one tool function, then embed it in SwiftUI, UIKit, or AppKit.
 
 ### Step 1: Define a function
 
@@ -91,7 +91,9 @@ let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
 ))
 ```
 
-### Step 3: Show the chat view
+### Step 3: Embed the chat UI
+
+#### SwiftUI
 
 ```swift
 import SwiftUI
@@ -110,6 +112,92 @@ struct ContentView: View {
 ```
 
 `ResolveKitChatView` calls `runtime.start()` automatically when it appears. It handles connection state, streaming text, tool approval UI, and the message composer.
+
+#### UIKit
+
+Use `ResolveKitChatViewController` when your app is built around `UIViewController`.
+
+```swift
+import UIKit
+import ResolveKitUI
+
+final class ChatHostViewController: UIViewController {
+    private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
+        apiKeyProvider: { "iaa_your_api_key" },
+        functions: [GetLocalTime.self]
+    ))
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let chat = ResolveKitChatViewController(runtime: runtime)
+        addChild(chat)
+        chat.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(chat.view)
+        NSLayoutConstraint.activate([
+            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
+            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        chat.didMove(toParent: self)
+    }
+}
+```
+
+Convenience init:
+
+```swift
+let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
+    apiKeyProvider: { "iaa_your_api_key" },
+    functions: [GetLocalTime.self]
+))
+```
+
+`ResolveKitChatViewController` is a thin `UIHostingController` wrapper around `ResolveKitChatView`. The hosted view still starts the runtime automatically when it appears.
+
+#### AppKit
+
+Use `ResolveKitChatViewController` when your macOS app is built around `NSViewController`.
+
+```swift
+import AppKit
+import ResolveKitUI
+
+final class ChatHostViewController: NSViewController {
+    private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
+        apiKeyProvider: { "iaa_your_api_key" },
+        functions: [GetLocalTime.self]
+    ))
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+
+        let chat = ResolveKitChatViewController(runtime: runtime)
+        addChild(chat)
+        chat.view.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(chat.view)
+        NSLayoutConstraint.activate([
+            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
+            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+        chat.didMove(toParent: self)
+    }
+}
+```
+
+Convenience init:
+
+```swift
+let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
+    apiKeyProvider: { "iaa_your_api_key" },
+    functions: [GetLocalTime.self]
+))
+```
+
+On macOS, `ResolveKitChatViewController` is a thin `NSHostingController` wrapper around `ResolveKitChatView`. The hosted view still starts the runtime automatically when it appears.
 
 ---
 
@@ -414,7 +502,7 @@ Optional groups of tool functions defined in a dedicated module. See [Function P
 
 ## Runtime API
 
-`ResolveKitRuntime` is a `@MainActor ObservableObject`. All published properties update on the main thread and are safe to bind directly in SwiftUI views.
+`ResolveKitRuntime` is a `@MainActor ObservableObject`. All published properties update on the main thread and are safe to bind directly in SwiftUI views or through `ResolveKitChatViewController` in UIKit/AppKit hosts.
 
 ### Published properties
 
@@ -597,7 +685,7 @@ Sources/
   ResolveKitCore/        Protocols, registry, JSON types, TypeResolver, macro declaration
   ResolveKitMacros/      Swift compiler plugin — @ResolveKit expansion
   ResolveKitNetworking/  HTTP (function registration, session), WebSocket, SSE fallback
-  ResolveKitUI/          ResolveKitRuntime (ObservableObject), ResolveKitChatView, Configuration
+  ResolveKitUI/          ResolveKitRuntime, ResolveKitChatView, ResolveKitChatViewController, Configuration
   ResolveKitCodegen/     Build-time CLI that generates ResolveKitAutoRegistry.swift
 Plugins/
   ResolveKitPlugin/      SPM build tool plugin — runs ResolveKitCodegen at build time
@@ -613,7 +701,7 @@ Import only what you need:
 |--------|-----------|
 | `ResolveKitCore` | Runtime-safe protocols, registry, JSON/value types |
 | `ResolveKitAuthoring` | Optional source-only macro layer for private/internal distributions |
-| `ResolveKitUI` | `ResolveKitRuntime`, `ResolveKitChatView`, `ResolveKitConfiguration` — for app code |
+| `ResolveKitUI` | `ResolveKitRuntime`, `ResolveKitChatView`, `ResolveKitChatViewController`, `ResolveKitConfiguration` — for app code |
 
 `ResolveKitUI` re-exports `ResolveKitCore` transitively, so most app targets only need `import ResolveKitUI`.
 
