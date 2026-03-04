@@ -8,14 +8,15 @@ struct ResolveKitPlugin: BuildToolPlugin {
             return []
         }
 
-        let output = context.pluginWorkDirectoryURL.appending(path: "ResolveKitAutoRegistry.swift")
+        let output = context.pluginWorkDirectory.appending("ResolveKitAutoRegistry.swift")
+        let codegenTool = try context.tool(named: "ResolveKitCodegen")
 
         return [
             .buildCommand(
                 displayName: "Generating ResolveKit function registry",
-                executable: try context.tool(named: "ResolveKitCodegen").url,
-                arguments: [swiftTarget.directoryURL.path(), output.path()],
-                inputFiles: swiftTarget.sourceFiles(withSuffix: ".swift").map(\.url),
+                executable: codegenTool.path,
+                arguments: [swiftTarget.directory.string, output.string],
+                inputFiles: swiftTarget.sourceFiles(withSuffix: ".swift").map(\.path),
                 outputFiles: [output]
             )
         ]

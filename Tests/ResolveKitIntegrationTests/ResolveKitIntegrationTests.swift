@@ -637,7 +637,7 @@ struct SlowFunction: AnyResolveKitFunction {
     ]
 
     static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
-        try await Task.sleep(for: .seconds(3))
+        try await Task.sleep(nanoseconds: 3_000_000_000)
         return .string("done")
     }
 }
