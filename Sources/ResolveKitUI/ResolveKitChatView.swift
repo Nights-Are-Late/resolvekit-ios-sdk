@@ -36,7 +36,7 @@ public struct ResolveKitChatView: View {
     }
 
     private let bottomAnchorID = "chat-bottom-anchor"
-    private let scrollSpring = Animation.spring(duration: 0.5, bounce: 0.24, blendDuration: 0.15)
+    private let scrollSpring = Animation.spring(response: 0.5, dampingFraction: 0.82, blendDuration: 0.15)
     private let morphBubbleID = "assistant-response-bubble-morph"
     @ObservedObject private var runtime: ResolveKitRuntime
     @Environment(\.colorScheme) private var systemColorScheme
@@ -104,20 +104,20 @@ public struct ResolveKitChatView: View {
                                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                             }
                         }
-                        try? await Task.sleep(for: .milliseconds(70))
+                        await ResolveKitCompatibility.sleep(milliseconds: 70)
                         await MainActor.run {
                             withAnimation(scrollSpring) {
                                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                             }
                         }
                     }
-                    .onChange(of: showThinkingIndicator) { _, isVisible in
+                    .onChange(of: showThinkingIndicator) { isVisible in
                         if isVisible {
                             withAnimation(scrollSpring) {
                                 proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                             }
                             Task { @MainActor in
-                                try? await Task.sleep(for: .milliseconds(70))
+                                await ResolveKitCompatibility.sleep(milliseconds: 70)
                                 withAnimation(scrollSpring) {
                                     proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                                 }
@@ -163,7 +163,7 @@ public struct ResolveKitChatView: View {
                 .help("Start a new chat session")
             }
         }
-        .onChange(of: isThinkingVisibleRaw) { _, isVisible in
+        .onChange(of: isThinkingVisibleRaw) { isVisible in
             if !isVisible {
                 thinkingDelayTask?.cancel()
                 thinkingDelayTask = nil
@@ -175,7 +175,7 @@ public struct ResolveKitChatView: View {
 
             thinkingDelayTask?.cancel()
             thinkingDelayTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
+                await ResolveKitCompatibility.sleep(milliseconds: 500)
                 guard !Task.isCancelled, isThinkingVisibleRaw else { return }
                 withAnimation(.spring(response: 0.38, dampingFraction: 0.72, blendDuration: 0.12)) {
                     showThinkingIndicator = true
@@ -463,15 +463,15 @@ public struct ResolveKitChatView: View {
     }
 
     private var composer: some View {
-        HStack {
+        let placeholderColor = isComposerLoading
+            ? resolvedPalette.composerPlaceholderColor.opacity(0.65)
+            : resolvedPalette.composerPlaceholderColor
+
+        return HStack {
             TextField(
                 "",
                 text: $draft,
-                prompt: Text(runtime.messagePlaceholder).foregroundStyle(
-                    isComposerLoading
-                        ? resolvedPalette.composerPlaceholderColor.opacity(0.65)
-                        : resolvedPalette.composerPlaceholderColor
-                )
+                prompt: Text(runtime.messagePlaceholder).foregroundColor(placeholderColor)
             )
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)

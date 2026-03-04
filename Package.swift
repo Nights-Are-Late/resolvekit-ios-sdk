@@ -1,12 +1,12 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 5.9
 import PackageDescription
 import CompilerPluginSupport
 
 let package = Package(
     name: "ResolveKit",
     platforms: [
-        .iOS(.v17),
-        .macOS(.v14)
+        .iOS(.v16),
+        .macOS(.v12)
     ],
     products: [
         .library(name: "ResolveKitCore", type: .dynamic, targets: ["ResolveKitCore"]),
@@ -16,7 +16,7 @@ let package = Package(
         .plugin(name: "ResolveKitPlugin", targets: ["ResolveKitPlugin"])
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "600.0.0")
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0")
     ],
     targets: [
         .target(
@@ -77,5 +77,6 @@ let package = Package(
             name: "ResolveKitIntegrationTests",
             dependencies: ["ResolveKitCore", "ResolveKitUI", "ResolveKitNetworking"]
         )
-    ]
+    ],
+    swiftLanguageVersions: [.v5]
 )

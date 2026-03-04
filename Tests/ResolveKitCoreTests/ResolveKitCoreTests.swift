@@ -108,7 +108,11 @@ struct ResolveKitSourceReleaseContractTests {
 
     @Test("Core target is runtime-only and authoring is split out")
     func packageSeparatesAuthoringFromCore() throws {
-        let package = try String(contentsOf: sdkRoot.appending(path: "Package.swift"))
+        let package = try String(contentsOf: sdkRoot.appendingPathComponent("Package.swift"))
+        #expect(package.contains("// swift-tools-version: 5.9"))
+        #expect(package.contains(".iOS(.v16)"))
+        #expect(package.contains(".macOS(.v12)"))
+        #expect(package.contains("swiftLanguageVersions: [.v5]"))
         #expect(package.contains(".library(name: \"ResolveKitAuthoring\", targets: [\"ResolveKitAuthoring\"])"))
         #expect(package.contains(".library(name: \"ResolveKitCore\", type: .dynamic, targets: [\"ResolveKitCore\"])"))
         #expect(package.contains(".library(name: \"ResolveKitNetworking\", type: .dynamic, targets: [\"ResolveKitNetworking\"])"))
@@ -120,13 +124,16 @@ struct ResolveKitSourceReleaseContractTests {
 
     @Test("README package example references the 1.0.1 source release")
     func readmeReferencesSourceRelease() throws {
-        let readme = try String(contentsOf: sdkRoot.appending(path: "README.md"))
+        let readme = try String(contentsOf: sdkRoot.appendingPathComponent("README.md"))
         #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"1.0.1\")"))
+        #expect(readme.contains("- iOS 16+ / macOS 12+"))
+        #expect(readme.contains("- Swift 5.9+ toolchain"))
+        #expect(readme.contains("apps that remain in Swift 5 language mode"))
     }
 
     @Test("Package remains source-based without binary targets")
     func packageRemainsSourceBased() throws {
-        let package = try String(contentsOf: sdkRoot.appending(path: "Package.swift"))
+        let package = try String(contentsOf: sdkRoot.appendingPathComponent("Package.swift"))
         #expect(!package.contains(".binaryTarget("))
         #expect(package.contains(".library(name: \"ResolveKitCore\", type: .dynamic, targets: [\"ResolveKitCore\"])"))
         #expect(package.contains(".library(name: \"ResolveKitNetworking\", type: .dynamic, targets: [\"ResolveKitNetworking\"])"))
@@ -136,20 +143,20 @@ struct ResolveKitSourceReleaseContractTests {
     @Test("Repository does not ship a binary wrapper package")
     func repositoryOmitsBinaryWrapperPackage() {
         let wrapperPackageURL = sdkRoot
-            .appending(path: "distribution")
-            .appending(path: "public-sdk")
-            .appending(path: "Package.swift")
+            .appendingPathComponent("distribution")
+            .appendingPathComponent("public-sdk")
+            .appendingPathComponent("Package.swift")
         #expect(FileManager.default.fileExists(atPath: wrapperPackageURL.path) == false)
     }
 
     @Test("Repository does not require binary release scripts")
     func repositoryOmitsBinaryReleaseScripts() {
         let binaryReleaseScript = sdkRoot
-            .appending(path: "scripts")
-            .appending(path: "build-binary-release.sh")
+            .appendingPathComponent("scripts")
+            .appendingPathComponent("build-binary-release.sh")
         let githubReleaseScript = sdkRoot
-            .appending(path: "scripts")
-            .appending(path: "build-and-release-github.sh")
+            .appendingPathComponent("scripts")
+            .appendingPathComponent("build-and-release-github.sh")
 
         #expect(FileManager.default.fileExists(atPath: binaryReleaseScript.path) == false)
         #expect(FileManager.default.fileExists(atPath: githubReleaseScript.path) == false)

@@ -260,7 +260,10 @@ public final class ResolveKitAPIClient: Sendable {
         guard let key = apiKeyProvider(), !key.isEmpty else {
             throw ResolveKitAPIClientError.missingAPIKey
         }
-        var components = URLComponents(url: baseURL.appending(path: "/v1/sessions/\(sessionID)/localization"), resolvingAgainstBaseURL: false)
+        var components = URLComponents(
+            url: baseURL.resolveKitAppending(path: "/v1/sessions/\(sessionID)/localization"),
+            resolvingAgainstBaseURL: false
+        )
         if let locale, !locale.isEmpty {
             components?.queryItems = [URLQueryItem(name: "locale", value: locale)]
         }
@@ -307,7 +310,7 @@ public final class ResolveKitAPIClient: Sendable {
         guard let key = apiKeyProvider(), !key.isEmpty else {
             throw ResolveKitAPIClientError.missingAPIKey
         }
-        let url = baseURL.appending(path: path)
+        let url = baseURL.resolveKitAppending(path: path)
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
@@ -442,6 +445,20 @@ public final class ResolveKitAPIClient: Sendable {
             return true
         }
         return false
+    }
+}
+
+private extension URL {
+    func resolveKitAppending(path: String) -> URL {
+        guard var components = URLComponents(url: self, resolvingAgainstBaseURL: false) else {
+            let trimmedPath = path.hasPrefix("/") ? String(path.dropFirst()) : path
+            return appendingPathComponent(trimmedPath)
+        }
+
+        let suffix = path.hasPrefix("/") ? path : "/" + path
+        let basePath = components.path.hasSuffix("/") ? String(components.path.dropLast()) : components.path
+        components.path = basePath + suffix
+        return components.url ?? self
     }
 }
 

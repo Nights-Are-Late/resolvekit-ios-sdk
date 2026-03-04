@@ -6,9 +6,9 @@ ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS
 
 ## Requirements
 
-- iOS 17+ / macOS 14+
-- Swift 6.0+
-- Xcode 16+
+- iOS 16+ / macOS 12+
+- Swift 5.9+ toolchain
+- Xcode 15.0+
 - A running [ResolveKit backend](https://github.com/nedasvi/playbook_backend) with a valid API key
 
 ---
@@ -38,6 +38,8 @@ targets: [
     )
 ]
 ```
+
+The package can be integrated into apps that remain in Swift 5 language mode, as long as the project is built with a Swift 5.9-or-newer toolchain.
 
 ### Product linking in Xcode
 
