@@ -54,89 +54,90 @@ public struct ResolveKitChatView: View {
             let safeAreaTop = geometry.safeAreaInsets.top
             let contentTopInset = topContentInset(safeAreaTop: safeAreaTop)
 
-            VStack(spacing: 12) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(timelineEntries) { entry in
-                                switch entry {
-                                case .message(let message):
-                                    messageRow(message)
-                                        .transition(
-                                            .asymmetric(
-                                                insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                removal: .opacity
-                                            )
-                                        )
-                                case .toolBatch(let batch):
-                                    toolBatchRow(batch)
-                                        .transition(
-                                            .asymmetric(
-                                                insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                removal: .opacity
-                                            )
-                                        )
-                                }
-                            }
-                            if shouldShowThinkingIndicator {
-                                thinkingIndicator
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(timelineEntries) { entry in
+                            switch entry {
+                            case .message(let message):
+                                messageRow(message)
                                     .transition(
                                         .asymmetric(
-                                            insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
+                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
+                                            removal: .opacity
+                                        )
+                                    )
+                            case .toolBatch(let batch):
+                                toolBatchRow(batch)
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
                                             removal: .opacity
                                         )
                                     )
                             }
-                            Color.clear
-                                .frame(height: 24)
-                                .id(bottomAnchorID)
                         }
-                        .padding(.leading, 16)
-                        .padding(.trailing, 16)
-                        .padding(.top, contentTopInset)
-                        .padding(.bottom, 12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        if shouldShowThinkingIndicator {
+                            thinkingIndicator
+                                .transition(
+                                    .asymmetric(
+                                        insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
+                                        removal: .opacity
+                                    )
+                                )
+                        }
+                        Color.clear
+                            .frame(height: 24)
+                            .id(bottomAnchorID)
                     }
-                    .ignoresSafeArea(edges: .top)
-                    .task(id: scrollTrigger) {
-                        await MainActor.run {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                        }
-                        await ResolveKitCompatibility.sleep(milliseconds: 70)
-                        await MainActor.run {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: showThinkingIndicator) { isVisible in
-                        if isVisible {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                            Task { @MainActor in
-                                await ResolveKitCompatibility.sleep(milliseconds: 70)
-                                withAnimation(scrollSpring) {
-                                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                                }
-                            }
-                        } else {
+                    .padding(.leading, 16)
+                    .padding(.trailing, 16)
+                    .padding(.top, contentTopInset)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .ignoresSafeArea(edges: .top)
+                .safeAreaInset(edge: .bottom) {
+                    composer
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                        .background(.clear)
+                }
+                .task(id: scrollTrigger) {
+                    await MainActor.run {
+                        withAnimation(scrollSpring) {
                             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                         }
                     }
-                    .task {
-                        await MainActor.run {
+                    await ResolveKitCompatibility.sleep(milliseconds: 70)
+                    await MainActor.run {
+                        withAnimation(scrollSpring) {
                             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
-
-                composer
-                    .padding(.horizontal)
+                .onChange(of: showThinkingIndicator) { isVisible in
+                    if isVisible {
+                        withAnimation(scrollSpring) {
+                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        }
+                        Task { @MainActor in
+                            await ResolveKitCompatibility.sleep(milliseconds: 70)
+                            withAnimation(scrollSpring) {
+                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                            }
+                        }
+                    } else {
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                }
+                .task {
+                    await MainActor.run {
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                }
             }
-            .padding(.bottom)
             .background(resolvedPalette.screenBackgroundColor)
             .preferredColorScheme(preferredColorScheme)
             .navigationTitle(runtime.chatTitle)
