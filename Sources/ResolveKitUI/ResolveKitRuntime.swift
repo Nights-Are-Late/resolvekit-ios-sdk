@@ -1139,6 +1139,10 @@ extension ResolveKitRuntime {
     func _debugHandleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
         await handleServerEnvelope(envelope)
     }
+
+    func _debugSetChatTitle(_ title: String) {
+        chatTitle = title
+    }
 }
 #endif
 
