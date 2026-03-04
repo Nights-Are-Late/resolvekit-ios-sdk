@@ -403,6 +403,23 @@ struct ResolveKitRuntimeBatchTests {
         }
     }
 
+    @Test("Resetting tool call flow clears tool batch timeline")
+    @MainActor
+    func resetToolCallFlowClearsBatchHistory() async {
+        let runtime = makeRuntime()
+        runtime._debugSetTurnInProgress(true)
+
+        runtime._debugReceiveToolCallRequest(toolRequest(callID: "stale-1", function: "set_lights"))
+        await runtime._debugWaitForCoalescingWindow()
+        #expect(runtime.toolCallBatches.count == 1)
+
+        runtime._debugResetToolCallFlowForNewTurn()
+
+        #expect(runtime.toolCallChecklist.isEmpty)
+        #expect(runtime.toolCallBatches.isEmpty)
+        #expect(runtime.toolCallBatchState == .idle)
+    }
+
     @Test("chat unavailable frame shows generic assistant message")
     @MainActor
     func chatUnavailableFrameShowsAssistantFallback() async {

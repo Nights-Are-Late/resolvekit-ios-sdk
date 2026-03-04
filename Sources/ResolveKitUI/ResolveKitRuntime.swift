@@ -997,6 +997,7 @@ public final class ResolveKitRuntime: ObservableObject {
         activeBatchRequests = []
         activeBatchID = nil
         toolCallChecklist = []
+        toolCallBatches = []
         setToolCallBatchState(.idle)
         pendingToolCall = nil
     }
@@ -1142,6 +1143,10 @@ extension ResolveKitRuntime {
 
     func _debugSetChatTitle(_ title: String) {
         chatTitle = title
+    }
+
+    func _debugResetToolCallFlowForNewTurn() {
+        resetToolCallFlowForNewTurn()
     }
 }
 #endif

@@ -13,6 +13,7 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
     public init(runtime: ResolveKitRuntime) {
         self.runtime = runtime
         super.init(rootView: ResolveKitChatView(runtime: runtime))
+        applyNavigationStyle()
         bindRuntime()
     }
 
@@ -25,12 +26,22 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
         fatalError("init(coder:) has not been implemented")
     }
 
+    public override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+        applyNavigationStyle()
+    }
+
     private func bindRuntime() {
+        applyNavigationStyle()
         title = runtime.chatTitle
         runtime.$chatTitle
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.title = $0 }
             .store(in: &cancellables)
+    }
+
+    private func applyNavigationStyle() {
+        navigationItem.largeTitleDisplayMode = .never
     }
 }
 #elseif os(macOS)

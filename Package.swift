@@ -9,7 +9,7 @@ let package = Package(
         .macOS(.v12)
     ],
     products: [
-        .library(name: "ResolveKitCore", type: .dynamic, targets: ["ResolveKitCore"]),
+        .library(name: "ResolveKitCore", targets: ["ResolveKitCore"]),
         .library(name: "ResolveKitAuthoring", targets: ["ResolveKitAuthoring"]),
         .library(name: "ResolveKitNetworking", type: .dynamic, targets: ["ResolveKitNetworking"]),
         .library(name: "ResolveKitUI", type: .dynamic, targets: ["ResolveKitUI"]),

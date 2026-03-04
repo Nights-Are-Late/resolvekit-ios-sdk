@@ -54,89 +54,90 @@ public struct ResolveKitChatView: View {
             let safeAreaTop = geometry.safeAreaInsets.top
             let contentTopInset = topContentInset(safeAreaTop: safeAreaTop)
 
-            VStack(spacing: 12) {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 8) {
-                            ForEach(timelineEntries) { entry in
-                                switch entry {
-                                case .message(let message):
-                                    messageRow(message)
-                                        .transition(
-                                            .asymmetric(
-                                                insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                removal: .opacity
-                                            )
-                                        )
-                                case .toolBatch(let batch):
-                                    toolBatchRow(batch)
-                                        .transition(
-                                            .asymmetric(
-                                                insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                                removal: .opacity
-                                            )
-                                        )
-                                }
-                            }
-                            if shouldShowThinkingIndicator {
-                                thinkingIndicator
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 8) {
+                        ForEach(timelineEntries) { entry in
+                            switch entry {
+                            case .message(let message):
+                                messageRow(message)
                                     .transition(
                                         .asymmetric(
-                                            insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
+                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
+                                            removal: .opacity
+                                        )
+                                    )
+                            case .toolBatch(let batch):
+                                toolBatchRow(batch)
+                                    .transition(
+                                        .asymmetric(
+                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
                                             removal: .opacity
                                         )
                                     )
                             }
-                            Color.clear
-                                .frame(height: 24)
-                                .id(bottomAnchorID)
                         }
-                        .padding(.leading, 16)
-                        .padding(.trailing, 16)
-                        .padding(.top, contentTopInset)
-                        .padding(.bottom, 12)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        if shouldShowThinkingIndicator {
+                            thinkingIndicator
+                                .transition(
+                                    .asymmetric(
+                                        insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
+                                        removal: .opacity
+                                    )
+                                )
+                        }
+                        Color.clear
+                            .frame(height: 24)
+                            .id(bottomAnchorID)
                     }
-                    .ignoresSafeArea(edges: .top)
-                    .task(id: scrollTrigger) {
-                        await MainActor.run {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                        }
-                        await ResolveKitCompatibility.sleep(milliseconds: 70)
-                        await MainActor.run {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                        }
-                    }
-                    .onChange(of: showThinkingIndicator) { isVisible in
-                        if isVisible {
-                            withAnimation(scrollSpring) {
-                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                            }
-                            Task { @MainActor in
-                                await ResolveKitCompatibility.sleep(milliseconds: 70)
-                                withAnimation(scrollSpring) {
-                                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                                }
-                            }
-                        } else {
+                    .padding(.leading, 16)
+                    .padding(.trailing, 16)
+                    .padding(.top, contentTopInset)
+                    .padding(.bottom, 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .ignoresSafeArea(edges: .top)
+                .safeAreaInset(edge: .bottom) {
+                    composer
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                        .padding(.bottom, 4)
+                        .background(.clear)
+                }
+                .task(id: scrollTrigger) {
+                    await MainActor.run {
+                        withAnimation(scrollSpring) {
                             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                         }
                     }
-                    .task {
-                        await MainActor.run {
+                    await ResolveKitCompatibility.sleep(milliseconds: 70)
+                    await MainActor.run {
+                        withAnimation(scrollSpring) {
                             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
                         }
                     }
                 }
-
-                composer
-                    .padding(.horizontal)
+                .onChange(of: showThinkingIndicator) { isVisible in
+                    if isVisible {
+                        withAnimation(scrollSpring) {
+                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        }
+                        Task { @MainActor in
+                            await ResolveKitCompatibility.sleep(milliseconds: 70)
+                            withAnimation(scrollSpring) {
+                                proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                            }
+                        }
+                    } else {
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                }
+                .task {
+                    await MainActor.run {
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                }
             }
-            .padding(.bottom)
             .background(resolvedPalette.screenBackgroundColor)
             .preferredColorScheme(preferredColorScheme)
             .navigationTitle(runtime.chatTitle)
@@ -313,9 +314,8 @@ public struct ResolveKitChatView: View {
     private func toolBatchRow(_ batch: ToolCallChecklistBatch) -> some View {
         HStack {
             toolChecklistCard(batch)
-                .fixedSize(horizontal: true, vertical: false)
                 .frame(maxWidth: 560, alignment: .leading)
-            Spacer(minLength: 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -387,6 +387,8 @@ public struct ResolveKitChatView: View {
                 Text(item.humanDescription.isEmpty ? "I will perform a requested action." : item.humanDescription)
                     .font(.subheadline)
                     .foregroundStyle(resolvedPalette.toolCardBodyColor)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(statusText(for: item.status))
                     .font(.caption)
                     .foregroundStyle(resolvedPalette.statusTextColor)
@@ -467,7 +469,7 @@ public struct ResolveKitChatView: View {
             ? resolvedPalette.composerPlaceholderColor.opacity(0.65)
             : resolvedPalette.composerPlaceholderColor
 
-        return HStack {
+        return HStack(spacing: 10) {
             TextField(
                 "",
                 text: $draft,
@@ -476,26 +478,14 @@ public struct ResolveKitChatView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(
-                    isComposerLoading
-                        ? resolvedPalette.composerBackgroundColor.opacity(0.55)
-                        : resolvedPalette.composerBackgroundColor
-                )
+                .background(composerFieldBackground(isLoading: isComposerLoading))
                 .foregroundStyle(
                     isComposerLoading
                         ? resolvedPalette.composerTextColor.opacity(0.5)
                         : resolvedPalette.composerTextColor
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(
-                            isComposerLoading
-                                ? resolvedPalette.toolCardBorderColor.opacity(0.45)
-                                : resolvedPalette.toolCardBorderColor,
-                            lineWidth: 1
-                        )
-                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(composerFieldBorder(isLoading: isComposerLoading))
                 .disabled(isComposerLoading)
                 .submitLabel(.send)
                 .onSubmit {
@@ -508,7 +498,16 @@ public struct ResolveKitChatView: View {
             .foregroundStyle(isComposerLoading ? .secondary : .primary)
             .opacity(isComposerLoading ? 0.45 : 1)
             .disabled(isComposerLoading || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(composerSendButtonBackground)
+            .clipShape(Capsule())
+            .overlay(composerSendButtonBorder)
         }
+        .padding(.horizontal, supportsLiquidGlassChrome ? 8 : 0)
+        .padding(.vertical, supportsLiquidGlassChrome ? 6 : 0)
+        .background(composerDockBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func sendDraftIfPossible() {
@@ -546,6 +545,71 @@ public struct ResolveKitChatView: View {
             return runtime.chatTheme.dark
         case .system:
             return systemColorScheme == .dark ? runtime.chatTheme.dark : runtime.chatTheme.light
+        }
+    }
+
+    private var supportsLiquidGlassChrome: Bool {
+        #if os(iOS)
+        if #available(iOS 26, *) { return true }
+        return false
+        #elseif os(macOS)
+        if #available(macOS 26, *) { return true }
+        return false
+        #else
+        return false
+        #endif
+    }
+
+    @ViewBuilder
+    private func composerFieldBackground(isLoading: Bool) -> some View {
+        if supportsLiquidGlassChrome {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+        } else {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    isLoading
+                        ? resolvedPalette.composerBackgroundColor.opacity(0.55)
+                        : resolvedPalette.composerBackgroundColor
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func composerFieldBorder(isLoading: Bool) -> some View {
+        let color: Color = supportsLiquidGlassChrome
+            ? Color.white.opacity(0.22)
+            : (isLoading ? resolvedPalette.toolCardBorderColor.opacity(0.45) : resolvedPalette.toolCardBorderColor)
+
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(color, lineWidth: 1)
+    }
+
+    @ViewBuilder
+    private var composerSendButtonBackground: some View {
+        if supportsLiquidGlassChrome {
+            Capsule()
+                .fill(.ultraThinMaterial)
+        } else {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private var composerSendButtonBorder: some View {
+        if supportsLiquidGlassChrome {
+            Capsule()
+                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var composerDockBackground: some View {
+        if supportsLiquidGlassChrome {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.clear)
+        } else {
+            Color.clear
         }
     }
 }
