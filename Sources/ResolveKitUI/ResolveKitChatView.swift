@@ -313,9 +313,8 @@ public struct ResolveKitChatView: View {
     private func toolBatchRow(_ batch: ToolCallChecklistBatch) -> some View {
         HStack {
             toolChecklistCard(batch)
-                .fixedSize(horizontal: true, vertical: false)
                 .frame(maxWidth: 560, alignment: .leading)
-            Spacer(minLength: 24)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -387,6 +386,8 @@ public struct ResolveKitChatView: View {
                 Text(item.humanDescription.isEmpty ? "I will perform a requested action." : item.humanDescription)
                     .font(.subheadline)
                     .foregroundStyle(resolvedPalette.toolCardBodyColor)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                 Text(statusText(for: item.status))
                     .font(.caption)
                     .foregroundStyle(resolvedPalette.statusTextColor)
@@ -467,7 +468,7 @@ public struct ResolveKitChatView: View {
             ? resolvedPalette.composerPlaceholderColor.opacity(0.65)
             : resolvedPalette.composerPlaceholderColor
 
-        return HStack {
+        return HStack(spacing: 10) {
             TextField(
                 "",
                 text: $draft,
@@ -476,26 +477,14 @@ public struct ResolveKitChatView: View {
                 .textFieldStyle(.plain)
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
-                .background(
-                    isComposerLoading
-                        ? resolvedPalette.composerBackgroundColor.opacity(0.55)
-                        : resolvedPalette.composerBackgroundColor
-                )
+                .background(composerFieldBackground(isLoading: isComposerLoading))
                 .foregroundStyle(
                     isComposerLoading
                         ? resolvedPalette.composerTextColor.opacity(0.5)
                         : resolvedPalette.composerTextColor
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 10))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .stroke(
-                            isComposerLoading
-                                ? resolvedPalette.toolCardBorderColor.opacity(0.45)
-                                : resolvedPalette.toolCardBorderColor,
-                            lineWidth: 1
-                        )
-                )
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(composerFieldBorder(isLoading: isComposerLoading))
                 .disabled(isComposerLoading)
                 .submitLabel(.send)
                 .onSubmit {
@@ -508,7 +497,16 @@ public struct ResolveKitChatView: View {
             .foregroundStyle(isComposerLoading ? .secondary : .primary)
             .opacity(isComposerLoading ? 0.45 : 1)
             .disabled(isComposerLoading || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
+            .background(composerSendButtonBackground)
+            .clipShape(Capsule())
+            .overlay(composerSendButtonBorder)
         }
+        .padding(.horizontal, supportsLiquidGlassChrome ? 8 : 0)
+        .padding(.vertical, supportsLiquidGlassChrome ? 6 : 0)
+        .background(composerDockBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 
     private func sendDraftIfPossible() {
@@ -546,6 +544,71 @@ public struct ResolveKitChatView: View {
             return runtime.chatTheme.dark
         case .system:
             return systemColorScheme == .dark ? runtime.chatTheme.dark : runtime.chatTheme.light
+        }
+    }
+
+    private var supportsLiquidGlassChrome: Bool {
+        #if os(iOS)
+        if #available(iOS 26, *) { return true }
+        return false
+        #elseif os(macOS)
+        if #available(macOS 26, *) { return true }
+        return false
+        #else
+        return false
+        #endif
+    }
+
+    @ViewBuilder
+    private func composerFieldBackground(isLoading: Bool) -> some View {
+        if supportsLiquidGlassChrome {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(.ultraThinMaterial)
+        } else {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .fill(
+                    isLoading
+                        ? resolvedPalette.composerBackgroundColor.opacity(0.55)
+                        : resolvedPalette.composerBackgroundColor
+                )
+        }
+    }
+
+    @ViewBuilder
+    private func composerFieldBorder(isLoading: Bool) -> some View {
+        let color: Color = supportsLiquidGlassChrome
+            ? Color.white.opacity(0.22)
+            : (isLoading ? resolvedPalette.toolCardBorderColor.opacity(0.45) : resolvedPalette.toolCardBorderColor)
+
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+            .stroke(color, lineWidth: 1)
+    }
+
+    @ViewBuilder
+    private var composerSendButtonBackground: some View {
+        if supportsLiquidGlassChrome {
+            Capsule()
+                .fill(.ultraThinMaterial)
+        } else {
+            Color.clear
+        }
+    }
+
+    @ViewBuilder
+    private var composerSendButtonBorder: some View {
+        if supportsLiquidGlassChrome {
+            Capsule()
+                .stroke(Color.white.opacity(0.22), lineWidth: 1)
+        }
+    }
+
+    @ViewBuilder
+    private var composerDockBackground: some View {
+        if supportsLiquidGlassChrome {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(.clear)
+        } else {
+            Color.clear
         }
     }
 }
