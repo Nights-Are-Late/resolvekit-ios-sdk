@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+*.o
+*.d
+*.swp
+*.xcuserstate
+xcuserdata/
+*.xcworkspace/xcuserdata
+DerivedData/
+.env.release
