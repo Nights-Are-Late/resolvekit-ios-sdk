@@ -871,6 +871,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private func connectWebSocket(url: URL) async {
         wsStreamTask?.cancel()
         wsStreamTask = nil
+        await webSocketClient.disconnect()
         let stream = await webSocketClient.connect(url: url)
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             self.connectionPromise = cont
@@ -942,6 +943,10 @@ public final class ResolveKitRuntime: ObservableObject {
                 )
                 if payload.code == "chat_unavailable" {
                     presentChatUnavailable()
+                    return
+                }
+                if payload.code == "superseded" {
+                    // A newer connection has taken over — silently let this connection die.
                     return
                 }
                 lastError = payload.message

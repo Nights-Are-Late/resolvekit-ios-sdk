@@ -32,7 +32,7 @@ public actor ResolveKitWebSocketClient {
                 self.task = task
                 task.resume()
                 continuation.yield(.connected)
-                await self.listen(task: task)
+                await self.listen(task: task, continuation: continuation)
             }
         }
     }
@@ -95,15 +95,15 @@ public actor ResolveKitWebSocketClient {
         try await send(envelope: envelope)
     }
 
-    private func listen(task: URLSessionWebSocketTask) async {
+    private func listen(task: URLSessionWebSocketTask, continuation: AsyncStream<Event>.Continuation) async {
         do {
             let message = try await task.receive()
             let envelope: ResolveKitEnvelope
             switch message {
             case .string(let text):
                 guard let data = text.data(using: .utf8) else {
-                    continuation?.yield(.failed("Failed to decode text frame"))
-                    await listen(task: task)
+                    continuation.yield(.failed("Failed to decode text frame"))
+                    await listen(task: task, continuation: continuation)
                     return
                 }
                 envelope = try JSONDecoder().decode(ResolveKitEnvelope.self, from: data)
@@ -111,19 +111,21 @@ public actor ResolveKitWebSocketClient {
                 envelope = try JSONDecoder().decode(ResolveKitEnvelope.self, from: data)
                 _ = data.count
             @unknown default:
-                continuation?.yield(.failed("Unknown websocket message"))
-                await listen(task: task)
+                continuation.yield(.failed("Unknown websocket message"))
+                await listen(task: task, continuation: continuation)
                 return
             }
 
             ResolveKitWebSocketLogger.log("Receive type=\(envelope.type)")
-            continuation?.yield(.envelope(envelope))
-            await listen(task: task)
+            continuation.yield(.envelope(envelope))
+            await listen(task: task, continuation: continuation)
         } catch {
             ResolveKitWebSocketLogger.log("Receive error: \(error.localizedDescription)")
-            continuation?.yield(.failed(error.localizedDescription))
-            continuation?.finish()
-            self.task = nil
+            continuation.yield(.failed(error.localizedDescription))
+            continuation.finish()
+            if self.task === task {
+                self.task = nil
+            }
         }
     }
 }
