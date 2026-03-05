@@ -443,6 +443,110 @@ struct ResolveKitRuntimeBatchTests {
     }
 }
 
+@Suite("Runtime: path monitor reconnect behavior")
+struct ResolveKitRuntimePathMonitorTests {
+    @Test("Initial satisfied path update does not force reconnect")
+    @MainActor
+    func initialSatisfiedPathUpdateDoesNotForceReconnect() {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+
+        runtime._debugHandlePathSatisfaction(true)
+
+        #expect(runtime.connectionState == .active)
+        runtime.stop()
+    }
+
+    @Test("Repeated satisfied path updates keep active connection")
+    @MainActor
+    func repeatedSatisfiedPathUpdatesKeepConnectionActive() {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+
+        runtime._debugHandlePathSatisfaction(true)
+        runtime._debugHandlePathSatisfaction(true)
+
+        #expect(runtime.connectionState == .active)
+        runtime.stop()
+    }
+}
+
+@Suite("Runtime: reconnect trigger diagnostics")
+struct ResolveKitRuntimeReconnectDiagnosticsTests {
+    @Test("Path transition while active does not force reconnect")
+    @MainActor
+    func pathTransitionWhileActiveDoesNotForceReconnect() {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+
+        runtime._debugHandlePathSatisfaction(false)
+        runtime._debugHandlePathSatisfaction(true)
+
+        #expect(runtime.connectionState == .active)
+        #expect(runtime._debugLastReconnectTrigger() == nil)
+        runtime.stop()
+    }
+
+    @Test("Heartbeat-triggered reconnect is tagged as heartbeat")
+    @MainActor
+    func heartbeatTriggeredReconnectIsTagged() {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+
+        runtime._debugTriggerHeartbeatReconnect()
+
+        #expect(runtime._debugLastReconnectTrigger() == "heartbeat")
+        runtime.stop()
+    }
+
+    @Test("Heartbeat timeout does not trigger when pong arrived after ping")
+    @MainActor
+    func heartbeatTimeoutDoesNotTriggerWhenPongArrivedAfterPing() {
+        let runtime = makeRuntime()
+        let pingSentAt = Date()
+        let lastPong = pingSentAt.addingTimeInterval(0.05)
+
+        #expect(runtime._debugShouldTriggerHeartbeatReconnect(lastPongReceivedAt: lastPong, pingSentAt: pingSentAt) == false)
+        runtime.stop()
+    }
+
+    @Test("Heartbeat timeout triggers when pong is stale")
+    @MainActor
+    func heartbeatTimeoutTriggersWhenPongIsStale() {
+        let runtime = makeRuntime()
+        let pingSentAt = Date()
+        let lastPong = pingSentAt.addingTimeInterval(-0.05)
+
+        #expect(runtime._debugShouldTriggerHeartbeatReconnect(lastPongReceivedAt: lastPong, pingSentAt: pingSentAt))
+        runtime.stop()
+    }
+
+    @Test("WebSocket failure-triggered reconnect is tagged as ws-failure")
+    @MainActor
+    func wsFailureTriggeredReconnectIsTagged() async {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+
+        await runtime._debugConsumeWebSocketFailure("synthetic failure")
+
+        #expect(runtime._debugLastReconnectTrigger() == "ws-failure")
+        runtime.stop()
+    }
+
+    @Test("WebSocket failure keeps turn in progress for reconnect continuity")
+    @MainActor
+    func wsFailureKeepsTurnInProgressForReconnectContinuity() async {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+        runtime._debugSetTurnInProgress(true)
+
+        await runtime._debugConsumeWebSocketFailure("synthetic failure")
+
+        #expect(runtime.isTurnInProgress)
+        runtime.stop()
+    }
+}
+
 @Suite("Runtime: tool-result delivery resilience")
 struct ResolveKitRuntimeToolResultDeliveryTests {
     @Test("Tool result is queued when WS send fails and flushed via HTTP fallback")
