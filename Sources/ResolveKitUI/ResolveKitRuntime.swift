@@ -164,6 +164,8 @@ public final class ResolveKitRuntime: ObservableObject {
     private var queuedBatches: [[ResolveKitToolCallRequest]] = []
     private var activeBatchRequests: [ResolveKitToolCallRequest] = []
     private var activeBatchID: UUID?
+    private var pendingToolResults: [ResolveKitToolResultPayload] = []
+    private var isFlushingPendingToolResults = false
     private let unavailableMessage = "Chat is unavailable, try again later"
 
     public init(configuration: ResolveKitConfiguration) {
@@ -217,6 +219,7 @@ public final class ResolveKitRuntime: ObservableObject {
         connectionPromise?.resume()
         connectionPromise = nil
         Task { await self.webSocketClient.disconnect() }
+        pendingToolResults = []
         connectionState = .idle
     }
 
@@ -231,6 +234,7 @@ public final class ResolveKitRuntime: ObservableObject {
         connectionPromise = nil
         await webSocketClient.disconnect()
         session = nil
+        pendingToolResults = []
         lastSyncedSessionContext = nil
         didReuseActiveSession = false
         messages = []
@@ -494,7 +498,7 @@ public final class ResolveKitRuntime: ObservableObject {
                     reuseActiveSession: reuseActiveSession
                 )
             )
-            self.session = session
+            adoptSession(session)
             lastSyncedSessionContext = contextSnapshot
             currentLocale = ResolveKitLocaleResolver.resolve(
                 locale: session.locale,
@@ -803,11 +807,7 @@ public final class ResolveKitRuntime: ObservableObject {
                         error: "User denied action"
                     )
                     if self.sendToolResultsEnabled {
-                        do {
-                            try await self.webSocketClient.sendToolResult(payload)
-                        } catch {
-                            return BatchExecutionEvent.failed(callID: call.callID, error: error.localizedDescription)
-                        }
+                        _ = await self.deliverToolResultReliably(payload)
                     }
                     return BatchExecutionEvent.cancelled(callID: call.callID, reason: "User denied action")
                 }
@@ -872,6 +872,7 @@ public final class ResolveKitRuntime: ObservableObject {
             connectionPromise?.resume()
             connectionPromise = nil
             startHeartbeat()
+            _ = await flushPendingToolResults(reason: "websocket connected")
         case .disconnected:
             stopHeartbeat()
             connectionState = (lastError == unavailableMessage) ? .blocked : .reconnecting
@@ -1079,6 +1080,9 @@ public final class ResolveKitRuntime: ObservableObject {
             group.addTask { [weak self] in
                 let timeoutSeconds = call.timeoutSeconds
                 await ResolveKitCompatibility.sleep(seconds: timeoutSeconds)
+                guard !Task.isCancelled else {
+                    return .cancelled(callID: call.callID, reason: nil)
+                }
                 guard let self else {
                     return .failed(callID: call.callID, error: "Runtime deallocated")
                 }
@@ -1090,7 +1094,7 @@ public final class ResolveKitRuntime: ObservableObject {
                         result: nil,
                         error: reason
                     )
-                    try? await self.webSocketClient.sendToolResult(payload)
+                    _ = await self.deliverToolResultReliably(payload)
                 }
                 return .cancelled(callID: call.callID, reason: reason)
             }
@@ -1104,11 +1108,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private func executeBatchStepWithoutTimeout(_ call: ResolveKitToolCallRequest) async -> BatchExecutionEvent {
         let payload = await executeToolCall(call)
         if sendToolResultsEnabled {
-            do {
-                try await webSocketClient.sendToolResult(payload)
-            } catch {
-                return .failed(callID: call.callID, error: error.localizedDescription)
-            }
+            _ = await deliverToolResultReliably(payload)
         }
         if payload.status == .success {
             return .completed(callID: call.callID)
@@ -1326,6 +1326,108 @@ public final class ResolveKitRuntime: ObservableObject {
             }
         }
     }
+
+    private func adoptSession(_ newSession: ResolveKitSession) {
+        if let previous = session,
+           previous.id != newSession.id,
+           !pendingToolResults.isEmpty {
+            ResolveKitRuntimeLogger.log(
+                "Session changed from \(previous.id) to \(newSession.id), dropping \(pendingToolResults.count) pending tool result(s)"
+            )
+            pendingToolResults = []
+        }
+        session = newSession
+    }
+
+    @discardableResult
+    private func deliverToolResultReliably(_ payload: ResolveKitToolResultPayload) async -> Bool {
+        guard sendToolResultsEnabled else { return true }
+
+        if await sendToolResultViaWebSocket(payload) {
+            return true
+        }
+
+        queuePendingToolResult(payload)
+        return await flushPendingToolResults(reason: "immediate delivery retry")
+    }
+
+    private func queuePendingToolResult(_ payload: ResolveKitToolResultPayload) {
+        if let index = pendingToolResults.firstIndex(where: { $0.callID == payload.callID }) {
+            pendingToolResults[index] = payload
+        } else {
+            pendingToolResults.append(payload)
+        }
+        ResolveKitRuntimeLogger.log("Queued tool result call_id=\(payload.callID) for retry")
+    }
+
+    private func sendToolResultViaWebSocket(_ payload: ResolveKitToolResultPayload) async -> Bool {
+        guard connectionState == .active || connectionState == .reconnected else {
+            return false
+        }
+
+        do {
+            try await webSocketClient.sendToolResult(payload)
+            return true
+        } catch {
+            ResolveKitRuntimeLogger.log("WS tool_result send failed for \(payload.callID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    private func submitToolResultViaHTTP(
+        _ payload: ResolveKitToolResultPayload,
+        session: ResolveKitSession
+    ) async -> Bool {
+        do {
+            try await sseClient.submitToolResult(
+                sessionID: session.id,
+                payload: payload,
+                chatCapabilityToken: session.chatCapabilityToken
+            )
+            return true
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 404 || statusCode == 410 {
+            // Treat "not pending" and "session expired" as terminal for this call.
+            ResolveKitRuntimeLogger.log(
+                "HTTP tool_result submit terminal status=\(statusCode) for \(payload.callID), dropping retry"
+            )
+            return true
+        } catch {
+            ResolveKitRuntimeLogger.log("HTTP tool_result submit failed for \(payload.callID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func flushPendingToolResults(reason: String) async -> Bool {
+        guard !pendingToolResults.isEmpty else { return true }
+        guard !isFlushingPendingToolResults else { return false }
+        guard let session else {
+            ResolveKitRuntimeLogger.log("Pending tool results retained (\(pendingToolResults.count)); no active session")
+            return false
+        }
+
+        isFlushingPendingToolResults = true
+        defer { isFlushingPendingToolResults = false }
+
+        var remaining: [ResolveKitToolResultPayload] = []
+        for payload in pendingToolResults {
+            if await sendToolResultViaWebSocket(payload) {
+                continue
+            }
+            if await submitToolResultViaHTTP(payload, session: session) {
+                continue
+            }
+            remaining.append(payload)
+        }
+
+        if remaining.count != pendingToolResults.count {
+            ResolveKitRuntimeLogger.log(
+                "Flushed \(pendingToolResults.count - remaining.count) pending tool result(s) (\(reason))"
+            )
+        }
+        pendingToolResults = remaining
+        return remaining.isEmpty
+    }
 }
 
 #if DEBUG
@@ -1356,6 +1458,23 @@ extension ResolveKitRuntime {
 
     func _debugSetTurnInProgress(_ inProgress: Bool) {
         isTurnInProgress = inProgress
+    }
+
+    func _debugSetSession(_ session: ResolveKitSession?) {
+        if let session {
+            adoptSession(session)
+        } else {
+            self.session = nil
+            pendingToolResults = []
+        }
+    }
+
+    func _debugPendingToolResultCallIDs() -> [String] {
+        pendingToolResults.map(\.callID)
+    }
+
+    func _debugFlushPendingToolResults() async {
+        _ = await flushPendingToolResults(reason: "debug flush")
     }
 
     func _debugHandleServerEnvelope(_ envelope: ResolveKitEnvelope) async {

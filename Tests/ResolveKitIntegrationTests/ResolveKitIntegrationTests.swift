@@ -443,8 +443,52 @@ struct ResolveKitRuntimeBatchTests {
     }
 }
 
+@Suite("Runtime: tool-result delivery resilience")
+struct ResolveKitRuntimeToolResultDeliveryTests {
+    @Test("Tool result is queued when WS send fails and flushed via HTTP fallback")
+    @MainActor
+    func queuesThenFlushesToolResultAfterTransportFailure() async throws {
+        let stubSession = makeToolResultStubbedSession()
+        ResolveKitToolResultHTTPStub.reset()
+        ResolveKitToolResultHTTPStub.setMode(.offline)
+
+        let runtime = makeRuntime(
+            sendToolResultsEnabled: true,
+            networkSession: stubSession
+        )
+        try await runtime._debugRegisterFunctions([LightsFunction.self])
+        runtime._debugSetTurnInProgress(true)
+        runtime._debugSetSession(
+            ResolveKitSession(
+                id: "session-1",
+                wsURL: "/v1/sessions/session-1/ws",
+                chatCapabilityToken: "chat-capability-token"
+            )
+        )
+
+        runtime._debugReceiveToolCallRequest(toolRequest(callID: "retry-1", function: "set_lights"))
+        await runtime._debugWaitForCoalescingWindow()
+        await runtime.approveToolCallBatch()
+
+        let initialByID = Dictionary(uniqueKeysWithValues: runtime.toolCallChecklist.map { ($0.id, $0.status) })
+        #expect(initialByID["retry-1"] == .completed)
+        #expect(runtime._debugPendingToolResultCallIDs() == ["retry-1"])
+        #expect(ResolveKitToolResultHTTPStub.submittedPayloads.map(\.status) == [.success])
+
+        ResolveKitToolResultHTTPStub.setMode(.success)
+        await runtime._debugFlushPendingToolResults()
+
+        #expect(runtime._debugPendingToolResultCallIDs().isEmpty)
+        #expect(ResolveKitToolResultHTTPStub.submittedPayloads.map(\.status) == [.success, .success])
+        #expect(ResolveKitToolResultHTTPStub.submittedPayloads.allSatisfy { $0.callID == "retry-1" })
+    }
+}
+
 @MainActor
-private func makeRuntime() -> ResolveKitRuntime {
+private func makeRuntime(
+    sendToolResultsEnabled: Bool = false,
+    networkSession: URLSession? = nil
+) -> ResolveKitRuntime {
     let config = ResolveKitConfiguration(
         baseURL: URL(string: "http://localhost:8000")!,
         apiKeyProvider: { "test-api-key" },
@@ -452,9 +496,16 @@ private func makeRuntime() -> ResolveKitRuntime {
             ["location": .object(["city": .string("Vilnius")])]
         }
     )
-    let api = ResolveKitAPIClient(baseURL: config.baseURL, apiKeyProvider: config.apiKeyProvider)
+    let api = ResolveKitAPIClient(
+        baseURL: config.baseURL,
+        apiKeyProvider: config.apiKeyProvider,
+        session: networkSession
+    )
     let ws = ResolveKitWebSocketClient()
-    let sse = ResolveKitSSEClient(apiClient: api)
+    let sse = ResolveKitSSEClient(
+        apiClient: api,
+        session: networkSession ?? .shared
+    )
     let registry = ResolveKitRegistry()
     let runtime = ResolveKitRuntime(
         configuration: config,
@@ -462,9 +513,95 @@ private func makeRuntime() -> ResolveKitRuntime {
         webSocketClient: ws,
         sseClient: sse,
         registry: registry,
-        sendToolResultsEnabled: false
+        sendToolResultsEnabled: sendToolResultsEnabled
     )
     return runtime
+}
+
+private func makeToolResultStubbedSession() -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ResolveKitToolResultHTTPStub.self]
+    return URLSession(configuration: configuration)
+}
+
+private final class ResolveKitToolResultHTTPStub: URLProtocol, @unchecked Sendable {
+    enum Mode: Sendable {
+        case offline
+        case success
+    }
+
+    private static let lock = NSLock()
+    private static var mode: Mode = .offline
+    private(set) static var submittedPayloads: [ResolveKitToolResultPayload] = []
+
+    static func setMode(_ newMode: Mode) {
+        lock.lock()
+        mode = newMode
+        lock.unlock()
+    }
+
+    static func reset() {
+        lock.lock()
+        mode = .offline
+        submittedPayloads = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path.hasSuffix("/tool-results") == true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        Self.lock.lock()
+        let activeMode = Self.mode
+        let data = requestBodyData(request)
+        if let payload = try? JSONDecoder().decode(ResolveKitToolResultPayload.self, from: data) {
+            Self.submittedPayloads.append(payload)
+        }
+        Self.lock.unlock()
+
+        switch activeMode {
+        case .offline:
+            client?.urlProtocol(self, didFailWithError: URLError(.notConnectedToInternet))
+        case .success:
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: Data(#"{"status":"ok"}"#.utf8))
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
+
+    private func requestBodyData(_ request: URLRequest) -> Data {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return Data()
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
 }
 
 @Suite("Configuration: llm context provider")
