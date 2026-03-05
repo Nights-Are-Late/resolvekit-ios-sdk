@@ -153,6 +153,8 @@ public final class ResolveKitRuntime: ObservableObject {
 
     private var heartbeatTask: Task<Void, Never>?
     private var lastPongReceivedAt: Date?
+    private var consecutiveAuthFailures: Int = 0
+    private static let maxConsecutiveAuthFailures = 3
     private var activeAssistantDraft = ""
     private var activeAssistantMessageID: UUID?
 
@@ -208,6 +210,8 @@ public final class ResolveKitRuntime: ObservableObject {
         stopHeartbeat()
         reconnectTask?.cancel()
         reconnectTask = nil
+        reconnectAttempt = 0
+        consecutiveAuthFailures = 0
         wsStreamTask?.cancel()
         wsStreamTask = nil
         connectionPromise?.resume()
@@ -220,6 +224,7 @@ public final class ResolveKitRuntime: ObservableObject {
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
+        consecutiveAuthFailures = 0
         wsStreamTask?.cancel()
         wsStreamTask = nil
         connectionPromise?.resume()
@@ -472,6 +477,18 @@ public final class ResolveKitRuntime: ObservableObject {
             return
         } catch ResolveKitRuntimeError.unsupportedSDK {
             return
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
+            consecutiveAuthFailures += 1
+            ResolveKitRuntimeLogger.log("Auth failed (attempt \(consecutiveAuthFailures)/\(Self.maxConsecutiveAuthFailures)) – token may be expired, will retry")
+            if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
+                ResolveKitRuntimeLogger.log("Auth failed \(Self.maxConsecutiveAuthFailures) times, blocking")
+                connectionState = .blocked
+                lastError = "Authentication failed. Check your API key."
+                return
+            }
+            connectionState = .failed
+            lastError = "Authentication failed – retrying"
+            throw ResolveKitAPIClientError.serverError(statusCode, "Auth retry")
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
@@ -798,6 +815,7 @@ public final class ResolveKitRuntime: ObservableObject {
         case .connected:
             connectionState = didReuseActiveSession ? .reconnected : .active
             reconnectAttempt = 0
+            consecutiveAuthFailures = 0
             connectionPromise?.resume()
             connectionPromise = nil
             startHeartbeat()
