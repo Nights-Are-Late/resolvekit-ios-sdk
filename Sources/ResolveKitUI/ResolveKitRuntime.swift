@@ -871,7 +871,6 @@ public final class ResolveKitRuntime: ObservableObject {
     private func connectWebSocket(url: URL) async {
         wsStreamTask?.cancel()
         wsStreamTask = nil
-        await webSocketClient.disconnect()
         let stream = await webSocketClient.connect(url: url)
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             self.connectionPromise = cont
