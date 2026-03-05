@@ -260,7 +260,7 @@ public final class ResolveKitRuntime: ObservableObject {
             guard self.connectionState == .reconnecting || self.connectionState == .failed else { return }
             self.connectionState = .reconnecting
             do {
-                try await self.startInternal(reuseActiveSession: true)
+                try await self.reconnectWebSocket()
             } catch {
                 guard !Task.isCancelled else { return }
                 if self.connectionState != .blocked {
@@ -268,6 +268,59 @@ public final class ResolveKitRuntime: ObservableObject {
                     self.scheduleReconnect()
                 }
             }
+        }
+    }
+
+    /// Lightweight reconnect: reuses the existing session and only fetches a
+    /// new ws-ticket before re-establishing the WebSocket connection. Falls back
+    /// to full initialisation if no session is available yet.
+    private func reconnectWebSocket() async throws {
+        guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
+            connectionState = .blocked
+            lastError = "Missing API key"
+            return
+        }
+        guard let existingSession = session else {
+            // No session established yet — run full init.
+            try await startInternal(reuseActiveSession: true)
+            return
+        }
+        do {
+            connectionState = .connecting
+            let wsTicket = try await apiClient.createWSTicket(
+                sessionID: existingSession.id,
+                chatCapabilityToken: existingSession.chatCapabilityToken
+            )
+            let wsURL = try apiClient.buildWebSocketURL(
+                relativePath: wsTicket.wsURL,
+                wsTicket: wsTicket.wsTicket,
+                chatCapabilityToken: existingSession.chatCapabilityToken
+            )
+            await connectWebSocket(url: wsURL)
+        } catch ResolveKitAPIClientError.chatUnavailable {
+            ResolveKitRuntimeLogger.log("Reconnect blocked by chat_unavailable")
+            connectionState = .blocked
+            presentChatUnavailable()
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
+            consecutiveAuthFailures += 1
+            ResolveKitRuntimeLogger.log("Auth failed during reconnect (attempt \(consecutiveAuthFailures)/\(Self.maxConsecutiveAuthFailures))")
+            if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
+                connectionState = .blocked
+                lastError = "Authentication failed. Check your API key."
+                return
+            }
+            connectionState = .failed
+            lastError = "Authentication failed – retrying"
+            throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 404 {
+            // Session expired on the server — restart fully to get a new session.
+            ResolveKitRuntimeLogger.log("Session not found during reconnect (404), re-initialising")
+            session = nil
+            try await startInternal(reuseActiveSession: true)
+        } catch {
+            connectionState = .failed
+            lastError = error.localizedDescription
+            throw error
         }
     }
 
@@ -488,7 +541,7 @@ public final class ResolveKitRuntime: ObservableObject {
             }
             connectionState = .failed
             lastError = "Authentication failed – retrying"
-            throw ResolveKitAPIClientError.serverError(statusCode, "Auth retry")
+            throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
