@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import ResolveKitCore
 import ResolveKitNetworking
 
@@ -145,6 +146,13 @@ public final class ResolveKitRuntime: ObservableObject {
     private var reconnectAttempt: Int = 0
     private static let maxReconnectDelay: Double = 30
     private var connectionPromise: CheckedContinuation<Void, Never>?
+
+    private var pathMonitor: NWPathMonitor?
+    private let pathMonitorQueue = DispatchQueue(label: "com.resolvekit.pathmonitor", qos: .utility)
+    private var pathMonitorDebounceTask: Task<Void, Never>?
+
+    private var heartbeatTask: Task<Void, Never>?
+    private var lastPongReceivedAt: Date?
     private var activeAssistantDraft = ""
     private var activeAssistantMessageID: UUID?
 
@@ -191,7 +199,21 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     public func start() async throws {
+        startPathMonitor()
         try await startInternal(reuseActiveSession: true)
+    }
+
+    public func stop() {
+        stopPathMonitor()
+        stopHeartbeat()
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        wsStreamTask?.cancel()
+        wsStreamTask = nil
+        connectionPromise?.resume()
+        connectionPromise = nil
+        Task { await self.webSocketClient.disconnect() }
+        connectionState = .idle
     }
 
     public func reloadWithNewSession() async {
@@ -242,6 +264,129 @@ public final class ResolveKitRuntime: ObservableObject {
                 }
             }
         }
+    }
+
+    // MARK: - NWPathMonitor
+
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            Task { @MainActor in self.handlePathUpdate(path) }
+        }
+        monitor.start(queue: pathMonitorQueue)
+    }
+
+    private func stopPathMonitor() {
+        pathMonitorDebounceTask?.cancel()
+        pathMonitorDebounceTask = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    private func handlePathUpdate(_ path: NWPath) {
+        pathMonitorDebounceTask?.cancel()
+        pathMonitorDebounceTask = Task { [weak self] in
+            guard let self else { return }
+            await ResolveKitCompatibility.sleep(milliseconds: 500)
+            guard !Task.isCancelled else { return }
+            self.onPathStable(path)
+        }
+    }
+
+    private func onPathStable(_ path: NWPath) {
+        guard connectionState != .blocked,
+              connectionState != .idle,
+              connectionState != .registering,
+              connectionState != .connecting else { return }
+
+        guard path.status == .satisfied else {
+            ResolveKitRuntimeLogger.log("Path update: network unavailable, skipping reconnect")
+            return
+        }
+
+        if connectionState == .active || connectionState == .reconnected {
+            ResolveKitRuntimeLogger.log("Path update: network transition detected, forcing reconnect")
+            stopHeartbeat()
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            wsStreamTask?.cancel()
+            wsStreamTask = nil
+            connectionPromise?.resume()
+            connectionPromise = nil
+            Task { await self.webSocketClient.disconnect() }
+            reconnectAttempt = 0
+            connectionState = .reconnecting
+            scheduleReconnect()
+            return
+        }
+
+        if connectionState == .reconnecting || connectionState == .failed || connectionState == .fallbackSSE {
+            ResolveKitRuntimeLogger.log("Path update: network satisfied, accelerating reconnect")
+            reconnectAttempt = 0
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            connectionState = .reconnecting
+            scheduleReconnect()
+        }
+    }
+
+    // MARK: - Heartbeat
+
+    private func startHeartbeat() {
+        stopHeartbeat()
+        lastPongReceivedAt = Date()
+        heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await ResolveKitCompatibility.sleep(seconds: 25.0)
+                guard !Task.isCancelled else { return }
+
+                do {
+                    try await self.webSocketClient.ping()
+                    ResolveKitRuntimeLogger.log("Heartbeat: ping sent")
+                } catch {
+                    ResolveKitRuntimeLogger.log("Heartbeat: ping failed - \(error.localizedDescription)")
+                    await MainActor.run { self.triggerHeartbeatReconnect() }
+                    return
+                }
+
+                await ResolveKitCompatibility.sleep(seconds: 10.0)
+                guard !Task.isCancelled else { return }
+
+                await MainActor.run {
+                    guard let lastPong = self.lastPongReceivedAt else {
+                        self.triggerHeartbeatReconnect()
+                        return
+                    }
+                    if Date().timeIntervalSince(lastPong) > 10.0 {
+                        ResolveKitRuntimeLogger.log("Heartbeat: pong timeout - reconnecting")
+                        self.triggerHeartbeatReconnect()
+                    }
+                }
+            }
+        }
+    }
+
+    private func stopHeartbeat() {
+        heartbeatTask?.cancel()
+        heartbeatTask = nil
+    }
+
+    private func triggerHeartbeatReconnect() {
+        guard connectionState == .active || connectionState == .reconnected else { return }
+        ResolveKitRuntimeLogger.log("Heartbeat: connection dead, triggering reconnect")
+        stopHeartbeat()
+        wsStreamTask?.cancel()
+        wsStreamTask = nil
+        connectionPromise?.resume()
+        connectionPromise = nil
+        Task { await self.webSocketClient.disconnect() }
+        reconnectAttempt = 0
+        connectionState = .reconnecting
+        scheduleReconnect()
     }
 
     private func startInternal(reuseActiveSession: Bool) async throws {
@@ -655,12 +800,15 @@ public final class ResolveKitRuntime: ObservableObject {
             reconnectAttempt = 0
             connectionPromise?.resume()
             connectionPromise = nil
+            startHeartbeat()
         case .disconnected:
+            stopHeartbeat()
             connectionState = (lastError == unavailableMessage) ? .blocked : .reconnecting
             if connectionState == .reconnecting {
                 scheduleReconnect()
             }
         case .failed(let message):
+            stopHeartbeat()
             if lastError == unavailableMessage {
                 connectionState = .blocked
             } else {
@@ -715,7 +863,9 @@ public final class ResolveKitRuntime: ObservableObject {
             }
             isTurnInProgress = false
         case "pong":
-            break
+            lastPongReceivedAt = Date()
+        case "ping":
+            Task { try? await self.webSocketClient.sendPong() }
         default:
             break
         }

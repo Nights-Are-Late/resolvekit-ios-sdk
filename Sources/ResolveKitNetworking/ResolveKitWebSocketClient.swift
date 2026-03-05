@@ -90,6 +90,11 @@ public actor ResolveKitWebSocketClient {
         try await send(envelope: envelope)
     }
 
+    public func sendPong() async throws {
+        let envelope = ResolveKitEnvelope(type: "pong", payload: [:], timestamp: ISO8601DateFormatter().string(from: Date()))
+        try await send(envelope: envelope)
+    }
+
     private func listen(task: URLSessionWebSocketTask) async {
         do {
             let message = try await task.receive()
