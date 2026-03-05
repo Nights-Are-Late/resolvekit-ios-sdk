@@ -886,6 +886,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private func consume(event: ResolveKitWebSocketClient.Event) async {
         switch event {
         case .connected:
+            let isReconnectWithTurnInProgress = session != nil && isTurnInProgress
             connectionState = didReuseActiveSession ? .reconnected : .active
             reconnectAttempt = 0
             consecutiveAuthFailures = 0
@@ -893,6 +894,9 @@ public final class ResolveKitRuntime: ObservableObject {
             connectionPromise = nil
             startHeartbeat()
             _ = await flushPendingToolResults(reason: "websocket connected")
+            if isReconnectWithTurnInProgress {
+                Task { await self.reconcileInProgressTurnAfterReconnect() }
+            }
         case .disconnected:
             stopHeartbeat()
             connectionState = (lastError == unavailableMessage) ? .blocked : .reconnecting
@@ -1194,8 +1198,50 @@ public final class ResolveKitRuntime: ObservableObject {
                 )
             }
             messages = hydrated
+            // If we were mid-turn but the server already has an assistant reply as the last
+            // message, the turn completed while we were disconnected — clear the stale state.
+            if isTurnInProgress, hydrated.last?.role == .assistant {
+                ResolveKitRuntimeLogger.log("Clearing stale in-progress turn: server history shows turn completed")
+                finalizeUnresolvedToolCallsAsTimedOut(reason: "Completed while disconnected")
+                isTurnInProgress = false
+                activeAssistantDraft = ""
+                activeAssistantMessageID = nil
+            }
         } catch {
             ResolveKitRuntimeLogger.log("Failed to load reused session history: \(error.localizedDescription)")
+        }
+    }
+
+    /// Called after a lightweight reconnect when a turn was in progress.
+    /// Waits briefly for outbox frames to arrive via WS, then polls the server
+    /// to catch any turn completion that happened while we were disconnected.
+    private func reconcileInProgressTurnAfterReconnect() async {
+        await ResolveKitCompatibility.sleep(seconds: 1.5)
+        guard isTurnInProgress, let session else { return }
+        do {
+            let history = try await apiClient.listSessionMessages(
+                sessionID: session.id,
+                chatCapabilityToken: session.chatCapabilityToken
+            )
+            let serverMessages: [ResolveKitChatMessage] = history.compactMap { message in
+                guard let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !content.isEmpty else { return nil }
+                let role: ResolveKitChatMessage.Role = message.role == "user" ? .user : .assistant
+                return ResolveKitChatMessage(role: role, text: content, createdAt: parseISODate(message.createdAt) ?? Date())
+            }
+            guard let lastServer = serverMessages.last, lastServer.role == .assistant else { return }
+            // Turn has completed on the server — surface the response if we don't already have it.
+            let localAssistantTexts = Set(messages.filter { $0.role == .assistant }.map(\.text))
+            if !localAssistantTexts.contains(lastServer.text) {
+                upsertAssistantDraft(lastServer.text)
+            }
+            ResolveKitRuntimeLogger.log("Reconciled missed turn completion after reconnect")
+            finalizeUnresolvedToolCallsAsTimedOut(reason: "Completed while disconnected")
+            isTurnInProgress = false
+            activeAssistantDraft = ""
+            activeAssistantMessageID = nil
+        } catch {
+            ResolveKitRuntimeLogger.log("Failed to reconcile in-progress turn after reconnect: \(error.localizedDescription)")
         }
     }
 
