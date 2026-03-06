@@ -142,15 +142,67 @@ public struct ResolveKitSDKCompat: Codable, Sendable, Equatable {
     }
 }
 
-public struct ResolveKitWSTicket: Codable, Sendable, Equatable {
-    public let wsURL: String
-    public let wsTicket: String
-    public let expiresAt: String
+public struct ResolveKitTurnAccepted: Codable, Sendable, Equatable {
+    public let turnID: String
+    public let requestID: String
+    public let status: String
 
     enum CodingKeys: String, CodingKey {
-        case wsURL = "ws_url"
-        case wsTicket = "ws_ticket"
-        case expiresAt = "expires_at"
+        case turnID = "turn_id"
+        case requestID = "request_id"
+        case status
+    }
+}
+
+public struct ResolveKitMessageRequest: Codable, Sendable {
+    public let text: String
+    public let requestID: String
+    public let locale: String?
+
+    public init(text: String, requestID: String, locale: String? = nil) {
+        self.text = text
+        self.requestID = requestID
+        self.locale = locale
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case text
+        case requestID = "request_id"
+        case locale
+    }
+}
+
+public struct ResolveKitToolResultRequest: Codable, Sendable {
+    public let turnID: String
+    public let idempotencyKey: String
+    public let callID: String
+    public let status: ResolveKitToolResultStatus
+    public let result: JSONValue?
+    public let error: String?
+
+    public init(
+        turnID: String,
+        idempotencyKey: String,
+        callID: String,
+        status: ResolveKitToolResultStatus,
+        result: JSONValue? = nil,
+        error: String? = nil
+    ) {
+        self.turnID = turnID
+        self.idempotencyKey = idempotencyKey
+        self.callID = callID
+        self.status = status
+        self.result = result
+        self.error = error
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case turnID = "turn_id"
+        case idempotencyKey = "idempotency_key"
+        case callID = "call_id"
+        case status
+        case result
+        case error
     }
 }
 
@@ -185,6 +237,10 @@ public final class ResolveKitAPIClient: Sendable {
             configuration.timeoutIntervalForResource = 30
             self.session = URLSession(configuration: configuration)
         }
+    }
+
+    func _debugAPIKey() -> String? {
+        apiKeyProvider()
     }
 
     public func bulkSyncFunctions(_ functions: [ResolveKitDefinition]) async throws {
@@ -229,12 +285,16 @@ public final class ResolveKitAPIClient: Sendable {
         try await request(path: "/v1/sdk/chat-theme", method: "GET", body: Optional<String>.none, responseType: ResolveKitChatTheme.self)
     }
 
-    public func createWSTicket(sessionID: String, chatCapabilityToken: String) async throws -> ResolveKitWSTicket {
+    public func sendMessage(
+        sessionID: String,
+        requestBody: ResolveKitMessageRequest,
+        chatCapabilityToken: String
+    ) async throws -> ResolveKitTurnAccepted {
         try await request(
-            path: "/v1/sessions/\(sessionID)/ws-ticket",
+            path: "/v1/sessions/\(sessionID)/messages",
             method: "POST",
-            body: Optional<String>.none,
-            responseType: ResolveKitWSTicket.self,
+            body: requestBody,
+            responseType: ResolveKitTurnAccepted.self,
             chatCapabilityToken: chatCapabilityToken
         )
     }
@@ -290,20 +350,32 @@ public final class ResolveKitAPIClient: Sendable {
         return try JSONDecoder().decode(ResolveKitSessionLocalization.self, from: data)
     }
 
-    public func buildWebSocketURL(relativePath: String, wsTicket: String, chatCapabilityToken: String) throws -> URL {
+    public func buildEventsURL(relativePath: String, cursor: String? = nil) throws -> URL {
         guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
             throw ResolveKitAPIClientError.invalidResponse
         }
         components.path = relativePath
-        components.scheme = (components.scheme == "https") ? "wss" : "ws"
-        components.queryItems = [
-            URLQueryItem(name: "ticket", value: wsTicket),
-            URLQueryItem(name: "chat_capability", value: chatCapabilityToken),
-        ]
+        if let cursor, !cursor.isEmpty {
+            components.queryItems = [URLQueryItem(name: "cursor", value: cursor)]
+        }
         guard let url = components.url else {
             throw ResolveKitAPIClientError.invalidResponse
         }
         return url
+    }
+
+    public func submitToolResult(
+        sessionID: String,
+        requestBody: ResolveKitToolResultRequest,
+        chatCapabilityToken: String
+    ) async throws {
+        _ = try await request(
+            path: "/v1/sessions/\(sessionID)/tool-results",
+            method: "POST",
+            body: requestBody,
+            responseType: EmptyResponse.self,
+            chatCapabilityToken: chatCapabilityToken
+        )
     }
 
     public func authorizedURLRequest(path: String, method: String, chatCapabilityToken: String? = nil) throws -> URLRequest {

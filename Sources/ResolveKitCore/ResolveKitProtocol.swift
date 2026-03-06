@@ -23,7 +23,7 @@ public struct ResolveKitEnvelope: Codable, Sendable, Equatable {
 
 public struct ResolveKitSession: Codable, Sendable, Equatable {
     public let id: String
-    public let wsURL: String
+    public let eventsURL: String
     public let chatCapabilityToken: String
     public let reusedActiveSession: Bool
     public let availableFunctionNames: [String]
@@ -34,7 +34,7 @@ public struct ResolveKitSession: Codable, Sendable, Equatable {
 
     public init(
         id: String,
-        wsURL: String,
+        eventsURL: String,
         chatCapabilityToken: String,
         reusedActiveSession: Bool = false,
         availableFunctionNames: [String] = [],
@@ -44,7 +44,7 @@ public struct ResolveKitSession: Codable, Sendable, Equatable {
         initialMessage: String = "Hello! How can I help you today?"
     ) {
         self.id = id
-        self.wsURL = wsURL
+        self.eventsURL = eventsURL
         self.chatCapabilityToken = chatCapabilityToken
         self.reusedActiveSession = reusedActiveSession
         self.availableFunctionNames = availableFunctionNames
@@ -56,7 +56,7 @@ public struct ResolveKitSession: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id
-        case wsURL = "ws_url"
+        case eventsURL = "events_url"
         case chatCapabilityToken = "chat_capability_token"
         case reusedActiveSession = "reused_active_session"
         case availableFunctionNames = "available_function_names"
@@ -69,7 +69,7 @@ public struct ResolveKitSession: Codable, Sendable, Equatable {
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id)
-        wsURL = try c.decode(String.self, forKey: .wsURL)
+        eventsURL = try c.decode(String.self, forKey: .eventsURL)
         chatCapabilityToken = try c.decode(String.self, forKey: .chatCapabilityToken)
         reusedActiveSession = try c.decodeIfPresent(Bool.self, forKey: .reusedActiveSession) ?? false
         availableFunctionNames = try c.decodeIfPresent([String].self, forKey: .availableFunctionNames) ?? []
@@ -169,7 +169,6 @@ public enum ResolveKitConnectionState: String, Sendable {
     case active
     case reconnected
     case reconnecting
-    case fallbackSSE
     case blocked
     case failed
 }

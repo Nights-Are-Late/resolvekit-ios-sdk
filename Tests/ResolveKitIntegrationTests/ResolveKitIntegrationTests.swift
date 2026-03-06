@@ -63,7 +63,7 @@ struct ResolveKitIntegrationTests {
         let payload = """
         {
           "id": "8beeaed0-c3f5-44da-a55f-57a3624f760f",
-          "ws_url": "/v1/sessions/8beeaed0-c3f5-44da-a55f-57a3624f760f/ws",
+          "events_url": "/v1/sessions/8beeaed0-c3f5-44da-a55f-57a3624f760f/events",
           "chat_capability_token": "opaque-token",
           "available_function_names": ["set_lights", "get_weather"],
           "locale": "fr",
@@ -75,6 +75,7 @@ struct ResolveKitIntegrationTests {
         let data = Data(payload.utf8)
         let session = try JSONDecoder().decode(ResolveKitSession.self, from: data)
         #expect(session.chatCapabilityToken == "opaque-token")
+        #expect(session.eventsURL == "/v1/sessions/8beeaed0-c3f5-44da-a55f-57a3624f760f/events")
         #expect(session.reusedActiveSession == false)
         #expect(session.locale == "fr")
         #expect(session.chatTitle == "Assistance")
@@ -86,7 +87,7 @@ struct ResolveKitIntegrationTests {
         let payload = """
         {
           "id": "8beeaed0-c3f5-44da-a55f-57a3624f760f",
-          "ws_url": "/v1/sessions/8beeaed0-c3f5-44da-a55f-57a3624f760f/ws",
+          "events_url": "/v1/sessions/8beeaed0-c3f5-44da-a55f-57a3624f760f/events",
           "chat_capability_token": "opaque-token",
           "reused_active_session": true
         }
@@ -487,60 +488,38 @@ struct ResolveKitRuntimeReconnectDiagnosticsTests {
         runtime.stop()
     }
 
-    @Test("Heartbeat-triggered reconnect is tagged as heartbeat")
+    @Test("Path transition while failed accelerates reconnect")
     @MainActor
-    func heartbeatTriggeredReconnectIsTagged() {
+    func pathTransitionWhileFailedAcceleratesReconnect() {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.failed)
+
+        runtime._debugHandlePathSatisfaction(true)
+
+        #expect(runtime._debugLastReconnectTrigger() == "path")
+        runtime.stop()
+    }
+
+    @Test("Transport failure-triggered reconnect is tagged as transport-failure")
+    @MainActor
+    func transportFailureTriggeredReconnectIsTagged() async {
         let runtime = makeRuntime()
         runtime._debugSetConnectionState(.active)
 
-        runtime._debugTriggerHeartbeatReconnect()
+        await runtime._debugConsumeTransportFailure("synthetic failure")
 
-        #expect(runtime._debugLastReconnectTrigger() == "heartbeat")
+        #expect(runtime._debugLastReconnectTrigger() == "transport-failure")
         runtime.stop()
     }
 
-    @Test("Heartbeat timeout does not trigger when pong arrived after ping")
+    @Test("Transport failure keeps turn in progress for reconnect continuity")
     @MainActor
-    func heartbeatTimeoutDoesNotTriggerWhenPongArrivedAfterPing() {
-        let runtime = makeRuntime()
-        let pingSentAt = Date()
-        let lastPong = pingSentAt.addingTimeInterval(0.05)
-
-        #expect(runtime._debugShouldTriggerHeartbeatReconnect(lastPongReceivedAt: lastPong, pingSentAt: pingSentAt) == false)
-        runtime.stop()
-    }
-
-    @Test("Heartbeat timeout triggers when pong is stale")
-    @MainActor
-    func heartbeatTimeoutTriggersWhenPongIsStale() {
-        let runtime = makeRuntime()
-        let pingSentAt = Date()
-        let lastPong = pingSentAt.addingTimeInterval(-0.05)
-
-        #expect(runtime._debugShouldTriggerHeartbeatReconnect(lastPongReceivedAt: lastPong, pingSentAt: pingSentAt))
-        runtime.stop()
-    }
-
-    @Test("WebSocket failure-triggered reconnect is tagged as ws-failure")
-    @MainActor
-    func wsFailureTriggeredReconnectIsTagged() async {
-        let runtime = makeRuntime()
-        runtime._debugSetConnectionState(.active)
-
-        await runtime._debugConsumeWebSocketFailure("synthetic failure")
-
-        #expect(runtime._debugLastReconnectTrigger() == "ws-failure")
-        runtime.stop()
-    }
-
-    @Test("WebSocket failure keeps turn in progress for reconnect continuity")
-    @MainActor
-    func wsFailureKeepsTurnInProgressForReconnectContinuity() async {
+    func transportFailureKeepsTurnInProgressForReconnectContinuity() async {
         let runtime = makeRuntime()
         runtime._debugSetConnectionState(.active)
         runtime._debugSetTurnInProgress(true)
 
-        await runtime._debugConsumeWebSocketFailure("synthetic failure")
+        await runtime._debugConsumeTransportFailure("synthetic failure")
 
         #expect(runtime.isTurnInProgress)
         runtime.stop()
@@ -562,10 +541,11 @@ struct ResolveKitRuntimeToolResultDeliveryTests {
         )
         try await runtime._debugRegisterFunctions([LightsFunction.self])
         runtime._debugSetTurnInProgress(true)
+        runtime._debugSetActiveTurnID("turn-1")
         runtime._debugSetSession(
             ResolveKitSession(
                 id: "session-1",
-                wsURL: "/v1/sessions/session-1/ws",
+                eventsURL: "/v1/sessions/session-1/events",
                 chatCapabilityToken: "chat-capability-token"
             )
         )
@@ -605,8 +585,7 @@ private func makeRuntime(
         apiKeyProvider: config.apiKeyProvider,
         session: networkSession
     )
-    let ws = ResolveKitWebSocketClient()
-    let sse = ResolveKitSSEClient(
+    let eventStream = ResolveKitEventStreamClient(
         apiClient: api,
         session: networkSession ?? .shared
     )
@@ -614,8 +593,7 @@ private func makeRuntime(
     let runtime = ResolveKitRuntime(
         configuration: config,
         apiClient: api,
-        webSocketClient: ws,
-        sseClient: sse,
+        eventStreamClient: eventStream,
         registry: registry,
         sendToolResultsEnabled: sendToolResultsEnabled
     )

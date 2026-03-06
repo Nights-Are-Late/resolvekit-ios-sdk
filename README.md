@@ -1,6 +1,6 @@
 # ResolveKit iOS SDK
 
-ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps. The SDK connects your app to a ResolveKit backend, streams assistant responses over WebSocket, and dispatches tool calls to native Swift functions you define. Use it when you want a conversational agent that can call device-side code (APIs, Keychain, platform services) on the user's behalf.
+ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps. The SDK connects your app to a ResolveKit backend over an HTTP/3-first session event stream, replays in-flight turns after reconnects, and dispatches tool calls to native Swift functions you define. Use it when you want a conversational agent that can call device-side code (APIs, Keychain, platform services) on the user's behalf.
 
 ---
 
@@ -498,7 +498,7 @@ Optional groups of tool functions defined in a dedicated module. See [Function P
 // Chat transcript — array of user and assistant messages in chronological order
 @Published public private(set) var messages: [ResolveKitChatMessage]
 
-// Current WebSocket connection phase (see Connection States below)
+// Current session-stream connection phase (see Connection States below)
 @Published public private(set) var connectionState: ResolveKitConnectionState
 
 // True while the agent is processing a turn (streaming response or executing tools)
@@ -516,7 +516,7 @@ Optional groups of tool functions defined in a dedicated module. See [Function P
 // Historical record of all tool call batches, including completed ones
 @Published public private(set) var toolCallBatches: [ToolCallChecklistBatch]
 
-// Debug log of runtime lifecycle events (session creation, WS frames, errors)
+// Debug log of runtime lifecycle events (session creation, event frames, errors)
 @Published public private(set) var executionLog: [String]
 
 // Last unrecoverable error message, or nil if none
@@ -541,7 +541,7 @@ Optional groups of tool functions defined in a dedicated module. See [Function P
 ### Methods
 
 ```swift
-// Start the session: register functions → create session → mint ws-ticket → connect WebSocket.
+// Start the session: register functions → create session → open persistent event stream.
 // Called automatically by ResolveKitChatView; call manually only when driving a custom UI.
 func start() async throws
 
@@ -591,12 +591,11 @@ Each checklist row tracks status independently:
 
 ## Connection States
 
-`ResolveKitConnectionState` describes the WebSocket lifecycle. Observe `runtime.connectionState` to drive custom UI (e.g. a connection banner or reconnect button).
+`ResolveKitConnectionState` describes the persistent event-stream lifecycle. Observe `runtime.connectionState` to drive custom UI (e.g. a connection banner or reconnect button).
 
 ```
 idle → registering → connecting → active
                                ↘ reconnecting → reconnected → active
-                               ↘ fallbackSSE     (WebSocket unavailable; using SSE)
                                ↘ failed          (unrecoverable error)
                                ↘ blocked         (missing API key or incompatible SDK)
 ```
@@ -605,11 +604,10 @@ idle → registering → connecting → active
 |-------|-------------|
 | `idle` | Runtime created but `start()` not yet called |
 | `registering` | Registering functions with the backend |
-| `connecting` | Session created; establishing WebSocket |
-| `active` | WebSocket connected; agent ready to receive messages |
-| `reconnecting` | WebSocket dropped; SDK will retry automatically with exponential backoff (1s, 2s, 4s … 30s max) |
+| `connecting` | Session created; opening the persistent event stream |
+| `active` | Session event stream connected; agent ready to receive messages |
+| `reconnecting` | Event stream dropped; SDK will retry automatically with exponential backoff (1s, 2s, 4s … 30s max) |
 | `reconnected` | Reconnect succeeded; resuming active session |
-| `fallbackSSE` | WebSocket unavailable; using SSE for server-to-client events |
 | `failed` | Unrecoverable error; check `lastError` for details |
 | `blocked` | Connection refused due to missing API key or incompatible SDK version |
 
@@ -648,21 +646,14 @@ The backend receives `pack_name` and `source` metadata per registered function, 
 
 ## Wire Protocol
 
-The SDK communicates with the backend over WebSocket (with SSE fallback) using a JSON envelope format:
+The SDK communicates with the backend using an HTTP session stream:
 
 ```
-Client → Server:  chat_message | tool_result | ping
-Server → Client:  assistant_text_delta | tool_call_request | turn_complete | error | pong
+Client → Server:  POST /messages | POST /tool-results
+Server → Client:  GET /events (assistant_text_delta | tool_call_request | turn_complete | error)
 ```
 
-The SDK handles all framing, reconnection (exponential backoff: 1s → 2s → 4s → … → 30s max), and result encoding automatically.
-
-WebSocket auth is ticket-based:
-1. SDK authenticates over HTTP using the API key.
-2. SDK calls `POST /v1/sessions/{id}/ws-ticket`.
-3. SDK connects to `wss://.../v1/sessions/{id}/ws?ticket=...`.
-
-Tickets are short-lived and single-use.
+The SDK keeps one persistent event stream per session, resumes it with the last seen event cursor after reconnects, and replays missed frames before continuing the active turn.
 
 ---
 
@@ -672,7 +663,7 @@ Tickets are short-lived and single-use.
 Sources/
   ResolveKitCore/        Protocols, registry, JSON types, TypeResolver, macro declaration
   ResolveKitMacros/      Swift compiler plugin — @ResolveKit expansion
-  ResolveKitNetworking/  HTTP (function registration, session), WebSocket, SSE fallback
+  ResolveKitNetworking/  HTTP (function registration, session, event stream)
   ResolveKitUI/          ResolveKitRuntime, ResolveKitChatView, ResolveKitChatViewController, Configuration
   ResolveKitCodegen/     Build-time CLI that generates ResolveKitAutoRegistry.swift
 Plugins/
