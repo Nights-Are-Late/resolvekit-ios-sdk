@@ -12,13 +12,40 @@ public struct ResolveKitSSEEvent: Sendable {
     public let payload: JSONObject
 }
 
-public final class ResolveKitSSEClient: Sendable {
+public final class ResolveKitSSEClient: @unchecked Sendable {
     private let apiClient: ResolveKitAPIClient
-    private let session: URLSession
+    private var session: URLSession
+    private var sessionDelegate: ResolveKitSessionDelegate?
+    private let isCustomSession: Bool
 
-    public init(apiClient: ResolveKitAPIClient, session: URLSession = .shared) {
+    public init(apiClient: ResolveKitAPIClient, session: URLSession? = nil) {
         self.apiClient = apiClient
-        self.session = session
+        if let session {
+            self.isCustomSession = true
+            self.sessionDelegate = nil
+            self.session = session
+        } else {
+            self.isCustomSession = false
+            let delegate = ResolveKitSessionDelegate()
+            self.sessionDelegate = delegate
+            self.session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
+        }
+    }
+
+    /// Recreates the URLSession with a fresh TLS state. When `forceTLS12`
+    /// is true the new session caps TLS at 1.2, working around VPN proxies
+    /// that reject TLS 1.3 ClientHello.
+    public func resetSession(forceTLS12: Bool = false) {
+        guard !isCustomSession else { return }
+        session.invalidateAndCancel()
+        let delegate = ResolveKitSessionDelegate()
+        sessionDelegate = delegate
+        let configuration = URLSessionConfiguration.default
+        if forceTLS12 {
+            configuration.tlsMinimumSupportedProtocolVersion = .TLSv12
+            configuration.tlsMaximumSupportedProtocolVersion = .TLSv12
+        }
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
     }
 
     public func stream(

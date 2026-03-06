@@ -153,6 +153,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private static let maxReconnectDelay: Double = 30
     private var connectionPromise: CheckedContinuation<Void, Never>?
     private var lastReconnectTrigger: ReconnectTrigger?
+    private var isStarting = false
 
     private var pathMonitor: NWPathMonitor?
     private let pathMonitorQueue = DispatchQueue(label: "com.resolvekit.pathmonitor", qos: .utility)
@@ -163,6 +164,11 @@ public final class ResolveKitRuntime: ObservableObject {
     private var lastPongReceivedAt: Date?
     private var consecutiveAuthFailures: Int = 0
     private static let maxConsecutiveAuthFailures = 3
+    private var consecutiveWSFailures: Int = 0
+    private static let maxWSFailuresBeforeSSEFallback = 3
+    private var lastConnectionEstablishedAt: Date?
+    private static let pathMonitorCooldownSeconds: Double = 10
+    private var tlsFallbackActive = false
     private var activeAssistantDraft = ""
     private var activeAssistantMessageID: UUID?
 
@@ -211,8 +217,44 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     public func start() async throws {
+        guard !isStarting else {
+            ResolveKitRuntimeLogger.log("Start ignored: already in progress")
+            return
+        }
+        isStarting = true
+        defer { isStarting = false }
         startPathMonitor()
-        try await startInternal(reuseActiveSession: true)
+        do {
+            try await startInternal(reuseActiveSession: true)
+        } catch {
+            if isCancellationError(error) {
+                ResolveKitRuntimeLogger.log("Start cancelled")
+                return
+            }
+            guard (error as NSError).domain == NSURLErrorDomain else { throw error }
+            let isTLS = (error as NSError).code == NSURLErrorSecureConnectionFailed
+            if isTLS { tlsFallbackActive = true }
+            ResolveKitRuntimeLogger.log(
+                "Start failed: \(error.localizedDescription) – resetting sessions\(isTLS ? " with TLS 1.2 fallback" : "") for retry"
+            )
+            await resetAllNetworkSessions()
+            await ResolveKitCompatibility.sleep(seconds: 2.0)
+            do {
+                try await startInternal(reuseActiveSession: true)
+            } catch {
+                if isCancellationError(error) {
+                    ResolveKitRuntimeLogger.log("Start retry cancelled")
+                    return
+                }
+                guard (error as NSError).domain == NSURLErrorDomain else { throw error }
+                ResolveKitRuntimeLogger.log(
+                    "Start retry failed: \(error.localizedDescription) – entering background reconnect flow"
+                )
+                await resetAllNetworkSessions()
+                connectionState = .reconnecting
+                scheduleReconnect(trigger: .wsFailure)
+            }
+        }
     }
 
     public func stop() {
@@ -222,6 +264,8 @@ public final class ResolveKitRuntime: ObservableObject {
         reconnectTask = nil
         reconnectAttempt = 0
         consecutiveAuthFailures = 0
+        consecutiveWSFailures = 0
+        tlsFallbackActive = false
         wsStreamTask?.cancel()
         wsStreamTask = nil
         connectionPromise?.resume()
@@ -238,11 +282,14 @@ public final class ResolveKitRuntime: ObservableObject {
         reconnectTask = nil
         reconnectAttempt = 0
         consecutiveAuthFailures = 0
+        consecutiveWSFailures = 0
+        tlsFallbackActive = false
         wsStreamTask?.cancel()
         wsStreamTask = nil
         connectionPromise?.resume()
         connectionPromise = nil
         await webSocketClient.disconnect()
+        await resetAllNetworkSessions()
         session = nil
         pendingToolResults = []
         lastSyncedSessionContext = nil
@@ -279,20 +326,39 @@ public final class ResolveKitRuntime: ObservableObject {
             self.connectionState = .reconnecting
             do {
                 try await self.reconnectWebSocket()
-                } catch {
-                    guard !Task.isCancelled else { return }
-                    if self.connectionState != .blocked {
-                        self.connectionState = .reconnecting
-                        self.scheduleReconnect(trigger: trigger)
-                    }
+            } catch {
+                guard !Task.isCancelled else { return }
+                if self.isCancellationError(error) {
+                    ResolveKitRuntimeLogger.log("Reconnect attempt cancelled")
+                    return
                 }
+                if self.connectionState != .blocked {
+                    self.connectionState = .reconnecting
+                    self.scheduleReconnect(trigger: trigger)
+                }
+            }
         }
+    }
+
+    /// Invalidates / resets all URLSessions so the next connection performs a
+    /// fresh TLS handshake. Necessary when the network path changes (e.g. VPN
+    /// connects) because cached TLS session tickets become stale and cause
+    /// handshake failures without ever invoking the auth-challenge delegate.
+    private func resetAllNetworkSessions() async {
+        let tls12 = tlsFallbackActive
+        await webSocketClient.resetSession(forceTLS12: tls12)
+        apiClient.resetSession(forceTLS12: tls12)
+        sseClient.resetSession(forceTLS12: tls12)
+        ResolveKitRuntimeLogger.log(
+            "All network sessions reset\(tls12 ? " (TLS 1.2 fallback)" : "") – TLS cache cleared"
+        )
     }
 
     /// Lightweight reconnect: reuses the existing session and only fetches a
     /// new ws-ticket before re-establishing the WebSocket connection. Falls back
     /// to full initialisation if no session is available yet.
     private func reconnectWebSocket() async throws {
+        await resetAllNetworkSessions()
         guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
             connectionState = .blocked
             lastError = "Missing API key"
@@ -336,6 +402,12 @@ public final class ResolveKitRuntime: ObservableObject {
             session = nil
             try await startInternal(reuseActiveSession: true)
         } catch {
+            if isCancellationError(error) {
+                throw error
+            }
+            if (error as NSError).code == NSURLErrorSecureConnectionFailed {
+                tlsFallbackActive = true
+            }
             connectionState = .failed
             lastError = error.localizedDescription
             throw error
@@ -366,7 +438,7 @@ public final class ResolveKitRuntime: ObservableObject {
         pathMonitorDebounceTask?.cancel()
         pathMonitorDebounceTask = Task { [weak self] in
             guard let self else { return }
-            await ResolveKitCompatibility.sleep(milliseconds: 500)
+            await ResolveKitCompatibility.sleep(milliseconds: 2000)
             guard !Task.isCancelled else { return }
             self.onPathStable(path)
         }
@@ -404,8 +476,11 @@ public final class ResolveKitRuntime: ObservableObject {
         }
 
         if connectionState == .reconnecting || connectionState == .failed || connectionState == .fallbackSSE {
-            ResolveKitRuntimeLogger.log("Path update: network satisfied, accelerating reconnect")
+            ResolveKitRuntimeLogger.log(
+                "Path update: network satisfied, accelerating reconnect (resetting WS failure count from \(consecutiveWSFailures))"
+            )
             reconnectAttempt = 0
+            consecutiveWSFailures = 0
             reconnectTask?.cancel()
             reconnectTask = nil
             connectionState = .reconnecting
@@ -567,6 +642,9 @@ public final class ResolveKitRuntime: ObservableObject {
             lastError = "Authentication failed – retrying"
             throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch {
+            if isCancellationError(error) {
+                throw error
+            }
             connectionState = .failed
             lastError = error.localizedDescription
             throw error
@@ -771,6 +849,14 @@ public final class ResolveKitRuntime: ObservableObject {
         return 0
     }
 
+    private func isCancellationError(_ error: Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        let nsError = error as NSError
+        return nsError.domain == NSURLErrorDomain && nsError.code == NSURLErrorCancelled
+    }
+
     public func approveToolCallBatch() async {
         guard toolCallBatchState == .awaitingApproval else { return }
         guard !activeBatchRequests.isEmpty else { return }
@@ -778,7 +864,10 @@ public final class ResolveKitRuntime: ObservableObject {
         setToolCallBatchState(.approved)
         setToolCallBatchState(.executing)
 
-        for call in activeBatchRequests {
+        for (index, call) in activeBatchRequests.enumerated() {
+            if index > 0 {
+                await ResolveKitCompatibility.sleep(milliseconds: 1500)
+            }
             updateChecklistStatus(for: [call.callID], to: .running)
             let event = await executeBatchStep(call)
             switch event {
@@ -887,6 +976,11 @@ public final class ResolveKitRuntime: ObservableObject {
         switch event {
         case .connected:
             let isReconnectWithTurnInProgress = session != nil && isTurnInProgress
+            consecutiveWSFailures = 0
+            lastConnectionEstablishedAt = Date()
+            if tlsFallbackActive {
+                ResolveKitRuntimeLogger.log("Connected with TLS 1.2 fallback active")
+            }
             connectionState = didReuseActiveSession ? .reconnected : .active
             reconnectAttempt = 0
             consecutiveAuthFailures = 0
@@ -905,8 +999,20 @@ public final class ResolveKitRuntime: ObservableObject {
             }
         case .failed(let message):
             stopHeartbeat()
+            consecutiveWSFailures += 1
+            if message.contains("TLS") || message.contains("secure connection") {
+                tlsFallbackActive = true
+            }
+            ResolveKitRuntimeLogger.log(
+                "WebSocket failure \(consecutiveWSFailures)/\(Self.maxWSFailuresBeforeSSEFallback): \(message)"
+            )
             if lastError == unavailableMessage {
                 connectionState = .blocked
+            } else if consecutiveWSFailures >= Self.maxWSFailuresBeforeSSEFallback {
+                ResolveKitRuntimeLogger.log(
+                    "WebSocket failed \(consecutiveWSFailures) times consecutively, falling back to SSE"
+                )
+                connectionState = .fallbackSSE
             } else {
                 connectionState = .failed
                 lastError = message
@@ -915,6 +1021,10 @@ public final class ResolveKitRuntime: ObservableObject {
             connectionPromise = nil
             if connectionState == .failed {
                 scheduleReconnect(trigger: .wsFailure)
+            } else {
+                isTurnInProgress = false
+                connectionPromise?.resume()
+                connectionPromise = nil
             }
         case .envelope(let envelope):
             await handleServerEnvelope(envelope)
@@ -1344,6 +1454,76 @@ public final class ResolveKitRuntime: ObservableObject {
         isTurnInProgress = false
         activeAssistantMessageID = nil
         connectionState = .failed
+    }
+
+    /// After a WebSocket reconnect while a turn was in progress, the server
+    /// may have already completed the turn on the old (dead) connection. Wait
+    /// briefly to let the server resume on the new WS, then check the message
+    /// history to recover any missed responses.
+    private func recoverTurnAfterReconnectIfNeeded() {
+        guard isTurnInProgress, let session else { return }
+
+        let sessionID = session.id
+        let token = session.chatCapabilityToken
+
+        Task { [weak self] in
+            guard let self else { return }
+
+            await ResolveKitCompatibility.sleep(seconds: 3.0)
+
+            guard self.isTurnInProgress else { return }
+            guard self.connectionState == .active || self.connectionState == .reconnected else { return }
+
+            ResolveKitRuntimeLogger.log("Turn still in progress 3s after reconnect, fetching server messages")
+
+            do {
+                let history = try await self.apiClient.listSessionMessages(
+                    sessionID: sessionID,
+                    chatCapabilityToken: token
+                )
+
+                guard self.isTurnInProgress else { return }
+
+                let serverMessages = history.filter {
+                    ($0.content?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true) == false
+                }
+
+                guard serverMessages.count > self.messages.count else {
+                    ResolveKitRuntimeLogger.log(
+                        "No missed messages found (server=\(serverMessages.count) local=\(self.messages.count))"
+                    )
+                    return
+                }
+
+                ResolveKitRuntimeLogger.log(
+                    "Recovered missed messages (server=\(serverMessages.count) local=\(self.messages.count))"
+                )
+
+                let hydrated: [ResolveKitChatMessage] = history.compactMap { message in
+                    guard let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !content.isEmpty else { return nil }
+                    let role: ResolveKitChatMessage.Role
+                    switch message.role {
+                    case "user": role = .user
+                    case "assistant": role = .assistant
+                    default: role = .system
+                    }
+                    return ResolveKitChatMessage(
+                        role: role,
+                        text: content,
+                        createdAt: self.parseISODate(message.createdAt) ?? Date()
+                    )
+                }
+                self.messages = hydrated
+                self.finalizeUnresolvedToolCallsAsTimedOut(reason: "Recovered after reconnect")
+                self.isTurnInProgress = false
+                self.activeAssistantDraft = ""
+                self.activeAssistantMessageID = nil
+                ResolveKitRuntimeLogger.log("Turn recovered successfully")
+            } catch {
+                ResolveKitRuntimeLogger.log("Turn recovery fetch failed: \(error.localizedDescription)")
+            }
+        }
     }
 
     private func presentChatUnavailable() {

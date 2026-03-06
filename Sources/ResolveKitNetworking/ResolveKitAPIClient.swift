@@ -168,23 +168,49 @@ public struct ResolveKitSessionHistoryMessage: Codable, Sendable, Equatable {
     }
 }
 
-public final class ResolveKitAPIClient: Sendable {
+public final class ResolveKitAPIClient: @unchecked Sendable {
     private static let chatCapabilityHeader = "X-Resolvekit-Chat-Capability"
     private let baseURL: URL
     private let apiKeyProvider: @Sendable () -> String?
-    private let session: URLSession
+    private var session: URLSession
+    private var sessionDelegate: ResolveKitSessionDelegate?
+    private let isCustomSession: Bool
 
     public init(baseURL: URL, apiKeyProvider: @escaping @Sendable () -> String?, session: URLSession? = nil) {
         self.baseURL = baseURL
         self.apiKeyProvider = apiKeyProvider
         if let session {
+            self.isCustomSession = true
+            self.sessionDelegate = nil
             self.session = session
         } else {
+            self.isCustomSession = false
+            let delegate = ResolveKitSessionDelegate()
+            self.sessionDelegate = delegate
             let configuration = URLSessionConfiguration.default
             configuration.timeoutIntervalForRequest = 15
             configuration.timeoutIntervalForResource = 30
-            self.session = URLSession(configuration: configuration)
+            self.session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         }
+    }
+
+    /// Recreates the URLSession with a fresh TLS state. When `forceTLS12`
+    /// is true the new session caps TLS at 1.2, working around VPN proxies
+    /// that reject TLS 1.3 ClientHello.
+    public func resetSession(forceTLS12: Bool = false) {
+        guard !isCustomSession else { return }
+        session.invalidateAndCancel()
+        let delegate = ResolveKitSessionDelegate()
+        sessionDelegate = delegate
+        let configuration = URLSessionConfiguration.default
+        configuration.timeoutIntervalForRequest = 15
+        configuration.timeoutIntervalForResource = 30
+        if forceTLS12 {
+            configuration.tlsMinimumSupportedProtocolVersion = .TLSv12
+            configuration.tlsMaximumSupportedProtocolVersion = .TLSv12
+        }
+        session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+        ResolveKitNetworkLogger.log("Session recreated\(forceTLS12 ? " (TLS 1.2 only)" : "") – TLS cache cleared")
     }
 
     public func bulkSyncFunctions(_ functions: [ResolveKitDefinition]) async throws {

@@ -43,6 +43,7 @@ public struct ResolveKitChatView: View {
     @State private var draft = ""
     @State private var showThinkingIndicator = false
     @State private var thinkingDelayTask: Task<Void, Never>?
+    @FocusState private var isInputFocused: Bool
     @Namespace private var bubbleMorphNamespace
 
     public init(runtime: ResolveKitRuntime) {
@@ -96,6 +97,8 @@ public struct ResolveKitChatView: View {
                     .padding(.bottom, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
+                .resolveKitDismissKeyboardOnScroll()
+                .onTapGesture { isInputFocused = false }
                 .ignoresSafeArea(edges: .top)
                 .safeAreaInset(edge: .bottom) {
                     composer
@@ -486,6 +489,7 @@ public struct ResolveKitChatView: View {
                 )
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .overlay(composerFieldBorder(isLoading: isComposerLoading))
+                .focused($isInputFocused)
                 .disabled(isComposerLoading)
                 .submitLabel(.send)
                 .onSubmit {
@@ -624,6 +628,15 @@ private extension View {
         #else
         self
         #endif
+    }
+
+    @ViewBuilder
+    func resolveKitDismissKeyboardOnScroll() -> some View {
+        if #available(iOS 16, macOS 13, *) {
+            self.scrollDismissesKeyboard(.interactively)
+        } else {
+            self
+        }
     }
 }
 
