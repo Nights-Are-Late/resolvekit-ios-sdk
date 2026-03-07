@@ -132,6 +132,19 @@ struct ResolveKitNetworkingDebugTests {
         #expect(summary.contains("message=Chat is unavailable, try again later"))
     }
 
+    @Test("Event stream client uses long-lived session timeouts")
+    func eventStreamClientUsesLongLivedSessionTimeouts() {
+        let client = ResolveKitAPIClient(
+            baseURL: URL(string: "http://localhost:8000")!,
+            apiKeyProvider: { "iaa_test_key" }
+        )
+        let eventStream = ResolveKitEventStreamClient(apiClient: client)
+        let configuration = eventStream._debugSessionConfiguration()
+
+        #expect(configuration.timeoutIntervalForRequest >= 60 * 60)
+        #expect(configuration.timeoutIntervalForResource >= 60 * 60)
+    }
+
     @Test("Session create request encodes llm_context")
     func sessionCreateRequestEncodesLLMContext() throws {
         let request = ResolveKitSessionCreateRequest(
@@ -458,16 +471,16 @@ struct ResolveKitRuntimePathMonitorTests {
         runtime.stop()
     }
 
-    @Test("Repeated satisfied path updates keep active connection")
+    @Test("Repeated satisfied path updates trigger proactive reconnect")
     @MainActor
-    func repeatedSatisfiedPathUpdatesKeepConnectionActive() {
+    func repeatedSatisfiedPathUpdatesTriggerProactiveReconnect() {
         let runtime = makeRuntime()
         runtime._debugSetConnectionState(.active)
 
         runtime._debugHandlePathSatisfaction(true)
         runtime._debugHandlePathSatisfaction(true)
 
-        #expect(runtime.connectionState == .active)
+        #expect(runtime.connectionState == .reconnecting)
         runtime.stop()
     }
 }
@@ -568,6 +581,62 @@ struct ResolveKitRuntimeToolResultDeliveryTests {
     }
 }
 
+@Suite("Runtime: outgoing messages")
+struct ResolveKitRuntimeOutgoingMessageTests {
+    @Test("Active runtime posts user message to session messages endpoint")
+    @MainActor
+    func activeRuntimePostsUserMessage() async throws {
+        let stubSession = makeMessageStubbedSession()
+        ResolveKitMessageHTTPStub.reset()
+
+        let runtime = makeRuntime(networkSession: stubSession)
+        runtime._debugSetSession(
+            ResolveKitSession(
+                id: "session-1",
+                eventsURL: "/v1/sessions/session-1/events",
+                chatCapabilityToken: "chat-capability-token"
+            )
+        )
+        runtime._debugSetConnectionState(.active)
+
+        await runtime.sendMessage("Hello from UI")
+
+        let request = try #require(ResolveKitMessageHTTPStub.requests.first { $0.payload?.text == "Hello from UI" })
+        #expect(request.method == "POST")
+        #expect(request.path == "/v1/sessions/session-1/messages")
+        #expect(request.authorization == "Bearer test-api-key")
+        #expect(request.chatCapabilityToken == "chat-capability-token")
+        #expect(request.payload?.requestID.isEmpty == false)
+    }
+
+    @Test("Connecting runtime waits briefly and posts once transport becomes active")
+    @MainActor
+    func connectingRuntimeWaitsForActiveTransportBeforePosting() async throws {
+        let stubSession = makeMessageStubbedSession()
+        ResolveKitMessageHTTPStub.reset()
+
+        let runtime = makeRuntime(networkSession: stubSession)
+        runtime._debugSetSession(
+            ResolveKitSession(
+                id: "session-1",
+                eventsURL: "/v1/sessions/session-1/events",
+                chatCapabilityToken: "chat-capability-token"
+            )
+        )
+        runtime._debugSetConnectionState(.connecting)
+
+        Task { @MainActor in
+            await ResolveKitCompatibility.sleep(milliseconds: 80)
+            runtime._debugSetConnectionState(.active)
+        }
+
+        await runtime.sendMessage("Hello after connect")
+
+        let request = try #require(ResolveKitMessageHTTPStub.requests.first { $0.payload?.text == "Hello after connect" })
+        #expect(request.path == "/v1/sessions/session-1/messages")
+    }
+}
+
 @MainActor
 private func makeRuntime(
     sendToolResultsEnabled: Bool = false,
@@ -603,6 +672,12 @@ private func makeRuntime(
 private func makeToolResultStubbedSession() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [ResolveKitToolResultHTTPStub.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeMessageStubbedSession() -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ResolveKitMessageHTTPStub.self]
     return URLSession(configuration: configuration)
 }
 
@@ -660,6 +735,82 @@ private final class ResolveKitToolResultHTTPStub: URLProtocol, @unchecked Sendab
             client?.urlProtocol(self, didLoad: Data(#"{"status":"ok"}"#.utf8))
             client?.urlProtocolDidFinishLoading(self)
         }
+    }
+
+    override func stopLoading() {}
+
+    private func requestBodyData(_ request: URLRequest) -> Data {
+        if let body = request.httpBody {
+            return body
+        }
+        guard let stream = request.httpBodyStream else {
+            return Data()
+        }
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        let bufferSize = 1024
+        let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: bufferSize)
+        defer { buffer.deallocate() }
+        while stream.hasBytesAvailable {
+            let read = stream.read(buffer, maxLength: bufferSize)
+            if read <= 0 { break }
+            data.append(buffer, count: read)
+        }
+        return data
+    }
+}
+
+private struct ResolveKitCapturedMessageRequest: Sendable {
+    let method: String
+    let path: String
+    let authorization: String?
+    let chatCapabilityToken: String?
+    let payload: ResolveKitMessageRequest?
+}
+
+private final class ResolveKitMessageHTTPStub: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private(set) static var requests: [ResolveKitCapturedMessageRequest] = []
+
+    static func reset() {
+        lock.lock()
+        requests = []
+        lock.unlock()
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.path.hasSuffix("/messages") == true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let data = requestBodyData(request)
+        let captured = ResolveKitCapturedMessageRequest(
+            method: request.httpMethod ?? "",
+            path: request.url?.path ?? "",
+            authorization: request.value(forHTTPHeaderField: "Authorization"),
+            chatCapabilityToken: request.value(forHTTPHeaderField: "X-Resolvekit-Chat-Capability"),
+            payload: try? JSONDecoder().decode(ResolveKitMessageRequest.self, from: data)
+        )
+
+        Self.lock.lock()
+        Self.requests.append(captured)
+        Self.lock.unlock()
+
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 202,
+            httpVersion: nil,
+            headerFields: ["Content-Type": "application/json"]
+        )!
+        let body = Data(#"{"turn_id":"turn-1","request_id":"req-1","status":"accepted"}"#.utf8)
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: body)
+        client?.urlProtocolDidFinishLoading(self)
     }
 
     override func stopLoading() {}

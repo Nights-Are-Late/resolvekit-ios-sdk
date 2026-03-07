@@ -114,7 +114,7 @@ struct ResolveKitOpenSourcePackageContractTests {
         #expect(package.contains(".macOS(.v12)"))
         #expect(package.contains("swiftLanguageVersions: [.v5]"))
         #expect(package.contains(".library(name: \"ResolveKitAuthoring\", targets: [\"ResolveKitAuthoring\"])"))
-        #expect(package.contains(".library(name: \"ResolveKitCore\", type: .dynamic, targets: [\"ResolveKitCore\"])"))
+        #expect(package.contains(".library(name: \"ResolveKitCore\", targets: [\"ResolveKitCore\"])"))
         #expect(package.contains(".library(name: \"ResolveKitNetworking\", type: .dynamic, targets: [\"ResolveKitNetworking\"])"))
         #expect(package.contains(".library(name: \"ResolveKitUI\", type: .dynamic, targets: [\"ResolveKitUI\"])"))
         #expect(package.contains(".target(\n            name: \"ResolveKitCore\""))
@@ -135,7 +135,7 @@ struct ResolveKitOpenSourcePackageContractTests {
     func packageRemainsSourceBased() throws {
         let package = try String(contentsOf: sdkRoot.appendingPathComponent("Package.swift"))
         #expect(!package.contains(".binaryTarget("))
-        #expect(package.contains(".library(name: \"ResolveKitCore\", type: .dynamic, targets: [\"ResolveKitCore\"])"))
+        #expect(package.contains(".library(name: \"ResolveKitCore\", targets: [\"ResolveKitCore\"])"))
         #expect(package.contains(".library(name: \"ResolveKitNetworking\", type: .dynamic, targets: [\"ResolveKitNetworking\"])"))
         #expect(package.contains(".library(name: \"ResolveKitUI\", type: .dynamic, targets: [\"ResolveKitUI\"])"))
     }

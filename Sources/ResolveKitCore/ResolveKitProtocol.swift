@@ -2,12 +2,14 @@ import Foundation
 
 public struct ResolveKitEnvelope: Codable, Sendable, Equatable {
     public let type: String
+    public let turnID: String?
     public let requestID: String?
     public let payload: JSONObject
     public let timestamp: String?
 
-    public init(type: String, requestID: String? = nil, payload: JSONObject, timestamp: String? = nil) {
+    public init(type: String, turnID: String? = nil, requestID: String? = nil, payload: JSONObject, timestamp: String? = nil) {
         self.type = type
+        self.turnID = turnID
         self.requestID = requestID
         self.payload = payload
         self.timestamp = timestamp
@@ -15,6 +17,7 @@ public struct ResolveKitEnvelope: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case type
+        case turnID = "turn_id"
         case requestID = "request_id"
         case payload
         case timestamp

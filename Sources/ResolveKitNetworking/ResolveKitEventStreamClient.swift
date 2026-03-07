@@ -15,16 +15,26 @@ public struct ResolveKitEventStreamEvent: Sendable {
 public final class ResolveKitEventStreamClient: Sendable {
     private let apiClient: ResolveKitAPIClient
     private let session: URLSession
+    private static let longLivedTimeout: TimeInterval = 7 * 24 * 60 * 60
 
     public init(apiClient: ResolveKitAPIClient, session: URLSession = .shared) {
         self.apiClient = apiClient
-        self.session = session
+        if session == .shared {
+            let configuration = URLSessionConfiguration.default
+            configuration.timeoutIntervalForRequest = Self.longLivedTimeout
+            configuration.timeoutIntervalForResource = Self.longLivedTimeout
+            configuration.waitsForConnectivity = true
+            self.session = URLSession(configuration: configuration)
+        } else {
+            self.session = session
+        }
     }
 
     public func stream(
         eventsPath: String,
         chatCapabilityToken: String,
-        cursor: String?
+        cursor: String?,
+        onHeartbeat: (@Sendable () -> Void)? = nil
     ) async throws -> AsyncThrowingStream<ResolveKitEventStreamEvent, Error> {
         let url = try apiClient.buildEventsURL(relativePath: eventsPath, cursor: cursor)
         var request = URLRequest(url: url)
@@ -33,11 +43,13 @@ public final class ResolveKitEventStreamClient: Sendable {
         }
         request.httpMethod = "GET"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
         request.setValue(chatCapabilityToken, forHTTPHeaderField: "X-Resolvekit-Chat-Capability")
+        request.timeoutInterval = Self.longLivedTimeout
 
-        ResolveKitEventStreamLogger.log("Request GET \(url.path)")
+        ResolveKitEventStreamLogger.log("Request GET \(url.path) timeoutInterval=\(request.timeoutInterval)")
         let (bytes, response) = try await session.bytes(for: request)
+        ResolveKitEventStreamLogger.log("Response received, status=\((response as? HTTPURLResponse)?.statusCode ?? -1)")
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             if let http = response as? HTTPURLResponse {
                 var body = ""
@@ -54,23 +66,35 @@ public final class ResolveKitEventStreamClient: Sendable {
                 do {
                     var currentEventID: String?
                     var dataBuffer = ""
+                    var lineBuffer = Data()
 
-                    for try await line in bytes.lines {
-                        if line.isEmpty {
-                            if !dataBuffer.isEmpty {
-                                let data = Data(dataBuffer.utf8)
-                                let envelope = try JSONDecoder().decode(ResolveKitEnvelope.self, from: data)
-                                continuation.yield(ResolveKitEventStreamEvent(id: currentEventID, envelope: envelope))
+                    for try await byte in bytes {
+                        onHeartbeat?()
+
+                        if byte == UInt8(ascii: "\n") {
+                            let line = String(data: lineBuffer, encoding: .utf8) ?? ""
+                            lineBuffer.removeAll(keepingCapacity: true)
+
+                            if line.isEmpty {
+                                // Empty line = end of SSE event
+                                if !dataBuffer.isEmpty {
+                                    let data = Data(dataBuffer.utf8)
+                                    let envelope = try JSONDecoder().decode(ResolveKitEnvelope.self, from: data)
+                                    continuation.yield(ResolveKitEventStreamEvent(id: currentEventID, envelope: envelope))
+                                }
+                                currentEventID = nil
+                                dataBuffer = ""
+                                continue
                             }
-                            currentEventID = nil
-                            dataBuffer = ""
-                            continue
-                        }
 
-                        if line.hasPrefix("id:") {
-                            currentEventID = line.replacingOccurrences(of: "id:", with: "").trimmingCharacters(in: .whitespaces)
-                        } else if line.hasPrefix("data:") {
-                            dataBuffer += line.replacingOccurrences(of: "data:", with: "").trimmingCharacters(in: .whitespaces)
+                            if line.hasPrefix("id:") {
+                                currentEventID = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+                            } else if line.hasPrefix("data:") {
+                                dataBuffer += String(line.dropFirst(5)).trimmingCharacters(in: .whitespaces)
+                            }
+                            // Comments (": ...") and "event:" lines are silently consumed
+                        } else {
+                            lineBuffer.append(byte)
                         }
                     }
 
@@ -83,3 +107,11 @@ public final class ResolveKitEventStreamClient: Sendable {
         }
     }
 }
+
+#if DEBUG
+extension ResolveKitEventStreamClient {
+    func _debugSessionConfiguration() -> URLSessionConfiguration {
+        session.configuration
+    }
+}
+#endif
