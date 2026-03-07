@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Network
 import ResolveKitCore
 import ResolveKitNetworking
 
@@ -21,6 +22,11 @@ private enum ResolveKitRuntimeError: LocalizedError {
             return reason
         }
     }
+}
+
+private enum ReconnectTrigger: String {
+    case path = "path"
+    case transportFailure = "transport-failure"
 }
 
 private enum ResolveKitRuntimeDeviceIDStore {
@@ -132,19 +138,35 @@ public final class ResolveKitRuntime: ObservableObject {
 
     private let configuration: ResolveKitConfiguration
     private let apiClient: ResolveKitAPIClient
-    private let webSocketClient: ResolveKitWebSocketClient
-    private let sseClient: ResolveKitSSEClient
+    private let eventStreamClient: ResolveKitEventStreamClient
     private let registry: ResolveKitRegistry
     private let sendToolResultsEnabled: Bool
 
     private var session: ResolveKitSession?
     private var lastSyncedSessionContext: SessionContextSnapshot?
     private var didReuseActiveSession = false
-    private var wsStreamTask: Task<Void, Never>?
+    private var eventStreamTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt: Int = 0
     private static let maxReconnectDelay: Double = 30
-    private var connectionPromise: CheckedContinuation<Void, Never>?
+    private var lastReconnectTrigger: ReconnectTrigger?
+    private var lastReceivedEventID: String? {
+        didSet {
+            guard let sessionID = session?.id, let value = lastReceivedEventID else { return }
+            UserDefaults.standard.set(value, forKey: "rk_cursor_\(sessionID)")
+        }
+    }
+    private var activeTurnID: String?
+
+    private var pathMonitor: NWPathMonitor?
+    private let pathMonitorQueue = DispatchQueue(label: "com.resolvekit.pathmonitor", qos: .utility)
+    private var pathMonitorDebounceTask: Task<Void, Never>?
+    private var lastStablePathSatisfied: Bool?
+
+    private var consecutiveAuthFailures: Int = 0
+    private static let maxConsecutiveAuthFailures = 3
+    private static let sendReadyWaitTimeoutMilliseconds: UInt64 = 4_000
+    private static let sendReadyPollIntervalMilliseconds: UInt64 = 100
     private var activeAssistantDraft = ""
     private var activeAssistantMessageID: UUID?
 
@@ -154,14 +176,20 @@ public final class ResolveKitRuntime: ObservableObject {
     private var queuedBatches: [[ResolveKitToolCallRequest]] = []
     private var activeBatchRequests: [ResolveKitToolCallRequest] = []
     private var activeBatchID: UUID?
+    private var pendingToolResults: [ResolveKitToolResultPayload] = []
+    private var isFlushingPendingToolResults = false
+    private var processedToolCallIDs: Set<String> = []
+    private var processedEventIDs: Set<String> = []
+    private var lastSSEDataReceivedAt: Date?
+    private var heartbeatWatchdogTask: Task<Void, Never>?
+    private static let heartbeatStaleThresholdSeconds: TimeInterval = 25
     private let unavailableMessage = "Chat is unavailable, try again later"
 
     public init(configuration: ResolveKitConfiguration) {
         self.configuration = configuration
         let apiClient = ResolveKitAPIClient(baseURL: configuration.baseURL, apiKeyProvider: configuration.apiKeyProvider)
         self.apiClient = apiClient
-        self.webSocketClient = ResolveKitWebSocketClient()
-        self.sseClient = ResolveKitSSEClient(apiClient: apiClient)
+        self.eventStreamClient = ResolveKitEventStreamClient(apiClient: apiClient)
         self.registry = ResolveKitRegistry()
         self.sendToolResultsEnabled = true
         self.currentLocale = ResolveKitLocaleResolver.resolve(
@@ -173,15 +201,13 @@ public final class ResolveKitRuntime: ObservableObject {
     init(
         configuration: ResolveKitConfiguration,
         apiClient: ResolveKitAPIClient,
-        webSocketClient: ResolveKitWebSocketClient,
-        sseClient: ResolveKitSSEClient,
+        eventStreamClient: ResolveKitEventStreamClient,
         registry: ResolveKitRegistry,
         sendToolResultsEnabled: Bool
     ) {
         self.configuration = configuration
         self.apiClient = apiClient
-        self.webSocketClient = webSocketClient
-        self.sseClient = sseClient
+        self.eventStreamClient = eventStreamClient
         self.registry = registry
         self.sendToolResultsEnabled = sendToolResultsEnabled
         self.currentLocale = ResolveKitLocaleResolver.resolve(
@@ -191,20 +217,44 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     public func start() async throws {
+        startPathMonitor()
         try await startInternal(reuseActiveSession: true)
     }
 
-    public func reloadWithNewSession() async {
+    public func stop() {
+        stopPathMonitor()
+        stopHeartbeatWatchdog()
         reconnectTask?.cancel()
         reconnectTask = nil
         reconnectAttempt = 0
-        wsStreamTask?.cancel()
-        wsStreamTask = nil
-        connectionPromise?.resume()
-        connectionPromise = nil
-        await webSocketClient.disconnect()
+        consecutiveAuthFailures = 0
+        eventStreamTask?.cancel()
+        eventStreamTask = nil
+        pendingToolResults = []
+        lastStablePathSatisfied = nil
+        lastReconnectTrigger = nil
+        lastReceivedEventID = nil
+        activeTurnID = nil
+        processedEventIDs = []
+        connectionState = .idle
+    }
+
+    public func reloadWithNewSession() async {
+        stopHeartbeatWatchdog()
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        reconnectAttempt = 0
+        consecutiveAuthFailures = 0
+        eventStreamTask?.cancel()
+        eventStreamTask = nil
         session = nil
+        pendingToolResults = []
         lastSyncedSessionContext = nil
+        lastStablePathSatisfied = nil
+        lastReconnectTrigger = nil
+        lastReceivedEventID = nil
+        activeTurnID = nil
+        processedEventIDs = []
         didReuseActiveSession = false
         messages = []
         activeAssistantDraft = ""
@@ -220,7 +270,9 @@ public final class ResolveKitRuntime: ObservableObject {
         }
     }
 
-    private func scheduleReconnect() {
+    private func scheduleReconnect(trigger: ReconnectTrigger) {
+        lastReconnectTrigger = trigger
+        ResolveKitRuntimeLogger.log("Reconnect trigger=\(trigger.rawValue)")
         reconnectTask?.cancel()
         let attempt = reconnectAttempt
         reconnectAttempt += 1
@@ -233,14 +285,134 @@ public final class ResolveKitRuntime: ObservableObject {
             guard self.connectionState == .reconnecting || self.connectionState == .failed else { return }
             self.connectionState = .reconnecting
             do {
-                try await self.startInternal(reuseActiveSession: true)
-            } catch {
-                guard !Task.isCancelled else { return }
-                if self.connectionState != .blocked {
-                    self.connectionState = .reconnecting
-                    self.scheduleReconnect()
+                try await self.reconnectEventStream()
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    if self.connectionState != .blocked {
+                        self.connectionState = .reconnecting
+                        self.scheduleReconnect(trigger: trigger)
+                    }
                 }
+        }
+    }
+
+    private func reconnectEventStream() async throws {
+        guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
+            connectionState = .blocked
+            lastError = "Missing API key"
+            return
+        }
+        guard let existingSession = session else {
+            // No session established yet — run full init.
+            try await startInternal(reuseActiveSession: true)
+            return
+        }
+        do {
+            connectionState = .connecting
+            try await connectEventStream(eventsPath: existingSession.eventsURL, cursor: lastReceivedEventID)
+        } catch ResolveKitAPIClientError.chatUnavailable {
+            ResolveKitRuntimeLogger.log("Reconnect blocked by chat_unavailable")
+            connectionState = .blocked
+            presentChatUnavailable()
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
+            consecutiveAuthFailures += 1
+            ResolveKitRuntimeLogger.log("Auth failed during reconnect (attempt \(consecutiveAuthFailures)/\(Self.maxConsecutiveAuthFailures))")
+            if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
+                connectionState = .blocked
+                lastError = "Authentication failed. Check your API key."
+                return
             }
+            connectionState = .failed
+            lastError = "Authentication failed – retrying"
+            throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 404 {
+            // Session expired on the server — restart fully to get a new session.
+            ResolveKitRuntimeLogger.log("Session not found during reconnect (404), re-initialising")
+            session = nil
+            try await startInternal(reuseActiveSession: true)
+        } catch {
+            connectionState = .failed
+            lastError = error.localizedDescription
+            throw error
+        }
+    }
+
+    // MARK: - NWPathMonitor
+
+    private func startPathMonitor() {
+        guard pathMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        pathMonitor = monitor
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            Task { @MainActor in self.handlePathUpdate(path) }
+        }
+        monitor.start(queue: pathMonitorQueue)
+    }
+
+    private func stopPathMonitor() {
+        pathMonitorDebounceTask?.cancel()
+        pathMonitorDebounceTask = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
+    }
+
+    private func handlePathUpdate(_ path: NWPath) {
+        pathMonitorDebounceTask?.cancel()
+        pathMonitorDebounceTask = Task { [weak self] in
+            guard let self else { return }
+            await ResolveKitCompatibility.sleep(milliseconds: 500)
+            guard !Task.isCancelled else { return }
+            self.onPathStable(path)
+        }
+    }
+
+    private func onPathStable(_ path: NWPath) {
+        onPathSatisfactionStable(path.status == .satisfied)
+    }
+
+    private func onPathSatisfactionStable(_ isSatisfied: Bool) {
+        let previousSatisfied = lastStablePathSatisfied
+        lastStablePathSatisfied = isSatisfied
+
+        guard connectionState != .blocked,
+              connectionState != .idle,
+              connectionState != .registering,
+              connectionState != .connecting else { return }
+
+        guard isSatisfied else {
+            ResolveKitRuntimeLogger.log("Path update: network unavailable, skipping reconnect")
+            return
+        }
+
+        if connectionState == .active || connectionState == .reconnected {
+            guard let previousSatisfied else {
+                ResolveKitRuntimeLogger.log("Path update: initial satisfied status observed, keeping active connection")
+                return
+            }
+            if previousSatisfied && isSatisfied {
+                ResolveKitRuntimeLogger.log("Path update: network interface transition detected (e.g. WiFi→Cell), proactive reconnect")
+                eventStreamTask?.cancel()
+                eventStreamTask = nil
+                stopHeartbeatWatchdog()
+                connectionState = .reconnecting
+                reconnectAttempt = 0
+                scheduleReconnect(trigger: .path)
+                return
+            }
+            if previousSatisfied {
+                ResolveKitRuntimeLogger.log("Path update: network transition detected, keeping active connection")
+            }
+            return
+        }
+
+        if connectionState == .reconnecting || connectionState == .failed {
+            ResolveKitRuntimeLogger.log("Path update: network satisfied, accelerating reconnect")
+            reconnectAttempt = 0
+            reconnectTask?.cancel()
+            reconnectTask = nil
+            connectionState = .reconnecting
+            scheduleReconnect(trigger: .path)
         }
     }
 
@@ -291,7 +463,7 @@ public final class ResolveKitRuntime: ObservableObject {
                     reuseActiveSession: reuseActiveSession
                 )
             )
-            self.session = session
+            adoptSession(session)
             lastSyncedSessionContext = contextSnapshot
             currentLocale = ResolveKitLocaleResolver.resolve(
                 locale: session.locale,
@@ -306,18 +478,7 @@ public final class ResolveKitRuntime: ObservableObject {
             } else if session.initialMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                 messages.append(.init(role: .assistant, text: session.initialMessage))
             }
-            let capabilityToken = session.chatCapabilityToken
-
-            let wsTicket = try await apiClient.createWSTicket(
-                sessionID: session.id,
-                chatCapabilityToken: capabilityToken
-            )
-            let wsURL = try apiClient.buildWebSocketURL(
-                relativePath: wsTicket.wsURL,
-                wsTicket: wsTicket.wsTicket,
-                chatCapabilityToken: capabilityToken
-            )
-            await connectWebSocket(url: wsURL)
+            try await connectEventStream(eventsPath: session.eventsURL, cursor: lastReceivedEventID)
         } catch ResolveKitAPIClientError.chatUnavailable {
             ResolveKitRuntimeLogger.log(
                 "Session start blocked by chat_unavailable (integration disabled, chat token invalid, or provider unavailable)"
@@ -327,15 +488,22 @@ public final class ResolveKitRuntime: ObservableObject {
             return
         } catch ResolveKitRuntimeError.unsupportedSDK {
             return
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
+            consecutiveAuthFailures += 1
+            ResolveKitRuntimeLogger.log("Auth failed (attempt \(consecutiveAuthFailures)/\(Self.maxConsecutiveAuthFailures)) – token may be expired, will retry")
+            if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
+                ResolveKitRuntimeLogger.log("Auth failed \(Self.maxConsecutiveAuthFailures) times, blocking")
+                connectionState = .blocked
+                lastError = "Authentication failed. Check your API key."
+                return
+            }
+            connectionState = .failed
+            lastError = "Authentication failed – retrying"
+            throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
             throw error
-        }
-
-        if connectionState != .active && connectionState != .reconnected && connectionState != .blocked {
-            connectionState = .fallbackSSE
-            lastError = "WebSocket unavailable, using SSE fallback"
         }
     }
 
@@ -349,8 +517,18 @@ public final class ResolveKitRuntime: ObservableObject {
 
     public func sendMessage(_ text: String) async {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        guard !isTurnInProgress else { return }
+        guard !trimmed.isEmpty else {
+            ResolveKitRuntimeLogger.log("sendMessage ignored empty text")
+            return
+        }
+        guard !isTurnInProgress else {
+            ResolveKitRuntimeLogger.log("sendMessage blocked because turn already in progress")
+            return
+        }
+
+        ResolveKitRuntimeLogger.log(
+            "sendMessage requested state=\(connectionState.rawValue) session_id=\(session?.id ?? "nil") text_len=\(trimmed.count)"
+        )
 
         messages.append(.init(role: .user, text: trimmed))
         isTurnInProgress = true
@@ -364,21 +542,63 @@ public final class ResolveKitRuntime: ObservableObject {
             ResolveKitRuntimeLogger.log("Failed to sync session context before send: \(error.localizedDescription)")
         }
 
-        if connectionState == .active || connectionState == .reconnected {
-            do {
-                try await webSocketClient.sendChatMessage(text: trimmed, locale: currentLocale)
-            } catch {
-                failTurn(error.localizedDescription)
+        let isReadyToSend = await waitForReadyToSendMessage()
+        ResolveKitRuntimeLogger.log(
+            "sendMessage readiness state=\(connectionState.rawValue) ready=\(isReadyToSend)"
+        )
+        guard isReadyToSend else {
+            failTurn("Not connected. Current state: \(connectionState.rawValue)")
+            return
+        }
+
+        let requestID = UUID().uuidString.lowercased()
+        let maxAttempts = 3
+        var lastError: String?
+
+        for attempt in 0..<maxAttempts {
+            if attempt > 0 {
+                let delay = min(pow(2.0, Double(attempt - 1)), 4.0)
+                await ResolveKitCompatibility.sleep(seconds: delay)
+                guard await waitForReadyToSendMessage() else { continue }
             }
-            return
+
+            do {
+                let accepted = try await apiClient.sendMessage(
+                    sessionID: session?.id ?? "",
+                    requestBody: ResolveKitMessageRequest(text: trimmed, requestID: requestID, locale: currentLocale),
+                    chatCapabilityToken: session?.chatCapabilityToken ?? ""
+                )
+                activeTurnID = accepted.turnID
+                ResolveKitRuntimeLogger.log(
+                    "sendMessage accepted turn_id=\(accepted.turnID) request_id=\(accepted.requestID)"
+                )
+                return
+            } catch {
+                lastError = error.localizedDescription
+                ResolveKitRuntimeLogger.log("sendMessage attempt \(attempt + 1)/\(maxAttempts) failed: \(error.localizedDescription)")
+            }
         }
 
-        if connectionState == .fallbackSSE {
-            await sendViaSSE(trimmed)
-            return
+        await awaitTurnConfirmationOrFail(lastError: lastError, maxAttempts: maxAttempts)
+    }
+
+    private func waitForReadyToSendMessage() async -> Bool {
+        if connectionState == .active || connectionState == .reconnected {
+            return true
         }
 
-        failTurn("Not connected. Current state: \(connectionState.rawValue)")
+        let iterations = Int(Self.sendReadyWaitTimeoutMilliseconds / Self.sendReadyPollIntervalMilliseconds)
+        for _ in 0..<iterations {
+            if connectionState == .active || connectionState == .reconnected {
+                return true
+            }
+            if connectionState == .blocked || connectionState == .idle {
+                return false
+            }
+            await ResolveKitCompatibility.sleep(milliseconds: Self.sendReadyPollIntervalMilliseconds)
+        }
+
+        return connectionState == .active || connectionState == .reconnected
     }
 
     private func resolveFunctionSources() throws -> [ResolvedFunctionSource] {
@@ -588,11 +808,7 @@ public final class ResolveKitRuntime: ObservableObject {
                         error: "User denied action"
                     )
                     if self.sendToolResultsEnabled {
-                        do {
-                            try await self.webSocketClient.sendToolResult(payload)
-                        } catch {
-                            return BatchExecutionEvent.failed(callID: call.callID, error: error.localizedDescription)
-                        }
+                        _ = await self.deliverToolResultReliably(payload)
                     }
                     return BatchExecutionEvent.cancelled(callID: call.callID, reason: "User denied action")
                 }
@@ -633,52 +849,96 @@ public final class ResolveKitRuntime: ObservableObject {
         await declineToolCallBatch()
     }
 
-    private func connectWebSocket(url: URL) async {
-        wsStreamTask?.cancel()
-        wsStreamTask = nil
-        let stream = await webSocketClient.connect(url: url)
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.connectionPromise = cont
-            wsStreamTask = Task { [weak self] in
-                guard let self else { return }
-                for await event in stream {
-                    await self.consume(event: event)
+    private nonisolated func recordSSEHeartbeat() {
+        Task { @MainActor in
+            self.lastSSEDataReceivedAt = Date()
+        }
+    }
+
+    private func startHeartbeatWatchdog() {
+        heartbeatWatchdogTask?.cancel()
+        lastSSEDataReceivedAt = Date()
+        heartbeatWatchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await ResolveKitCompatibility.sleep(seconds: 5)
+                guard let self, !Task.isCancelled else { return }
+                guard let lastData = self.lastSSEDataReceivedAt else { continue }
+                let staleness = Date().timeIntervalSince(lastData)
+                if staleness > Self.heartbeatStaleThresholdSeconds {
+                    ResolveKitRuntimeLogger.log("SSE heartbeat stale (\(Int(staleness))s), forcing reconnect")
+                    self.eventStreamTask?.cancel()
+                    self.stopHeartbeatWatchdog()
+                    await self.handleTransportFailure("Heartbeat timeout")
+                    return
                 }
             }
         }
     }
 
-    private func consume(event: ResolveKitWebSocketClient.Event) async {
-        switch event {
-        case .connected:
-            connectionState = didReuseActiveSession ? .reconnected : .active
-            reconnectAttempt = 0
-            connectionPromise?.resume()
-            connectionPromise = nil
-        case .disconnected:
-            connectionState = (lastError == unavailableMessage) ? .blocked : .reconnecting
-            if connectionState == .reconnecting {
-                scheduleReconnect()
+    private func stopHeartbeatWatchdog() {
+        heartbeatWatchdogTask?.cancel()
+        heartbeatWatchdogTask = nil
+        lastSSEDataReceivedAt = nil
+    }
+
+    private func connectEventStream(eventsPath: String, cursor: String?) async throws {
+        eventStreamTask?.cancel()
+        eventStreamTask = nil
+        let stream = try await eventStreamClient.stream(
+            eventsPath: eventsPath,
+            chatCapabilityToken: session?.chatCapabilityToken ?? "",
+            cursor: cursor,
+            onHeartbeat: { [weak self] in self?.recordSSEHeartbeat() }
+        )
+        let isReconnectWithTurnInProgress = session != nil && isTurnInProgress
+        connectionState = didReuseActiveSession || cursor != nil ? .reconnected : .active
+        reconnectAttempt = 0
+        consecutiveAuthFailures = 0
+        startHeartbeatWatchdog()
+        _ = await flushPendingToolResults(reason: "event stream connected")
+        if isReconnectWithTurnInProgress {
+            Task { await self.reconcileInProgressTurnAfterReconnect() }
+        }
+        eventStreamTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                for try await event in stream {
+                    if let eventID = event.id {
+                        guard !self.processedEventIDs.contains(eventID) else {
+                            self.lastReceivedEventID = eventID
+                            continue
+                        }
+                        self.processedEventIDs.insert(eventID)
+                        self.lastReceivedEventID = eventID
+                    }
+                    await self.handleServerEnvelope(event.envelope)
+                }
+                await self.handleTransportFailure("Event stream closed")
+            } catch {
+                await self.handleTransportFailure(error.localizedDescription)
             }
-        case .failed(let message):
-            if lastError == unavailableMessage {
-                connectionState = .blocked
-            } else {
-                connectionState = .failed
-                lastError = message
-            }
-            isTurnInProgress = false
-            connectionPromise?.resume()
-            connectionPromise = nil
-            if connectionState == .failed {
-                scheduleReconnect()
-            }
-        case .envelope(let envelope):
-            await handleServerEnvelope(envelope)
+        }
+    }
+
+    private func handleTransportFailure(_ message: String) async {
+        stopHeartbeatWatchdog()
+        if lastError == unavailableMessage {
+            connectionState = .blocked
+            return
+        }
+        connectionState = .failed
+        lastError = message
+        if connectionState == .failed {
+            scheduleReconnect(trigger: .transportFailure)
         }
     }
 
     private func handleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
+        if isTurnInProgress, activeTurnID == nil, let turnID = envelope.turnID {
+            ResolveKitRuntimeLogger.log("Adopting orphaned turn from SSE event turn_id=\(turnID)")
+            activeTurnID = turnID
+        }
+
         switch envelope.type {
         case "assistant_text_delta":
             if let payload: ResolveKitTextDelta = decodePayload(envelope.payload) {
@@ -696,6 +956,7 @@ public final class ResolveKitRuntime: ObservableObject {
             isTurnInProgress = false
             activeAssistantDraft = ""
             activeAssistantMessageID = nil
+            activeTurnID = nil
         case "error":
             if let payload: ResolveKitServerErrorPayload = decodePayload(envelope.payload) {
                 ResolveKitRuntimeLogger.log(
@@ -703,6 +964,10 @@ public final class ResolveKitRuntime: ObservableObject {
                 )
                 if payload.code == "chat_unavailable" {
                     presentChatUnavailable()
+                    return
+                }
+                if payload.code == "superseded" {
+                    // A newer connection has taken over — silently let this connection die.
                     return
                 }
                 lastError = payload.message
@@ -714,14 +979,18 @@ public final class ResolveKitRuntime: ObservableObject {
                 }
             }
             isTurnInProgress = false
-        case "pong":
-            break
+            activeTurnID = nil
         default:
             break
         }
     }
 
     private func enqueueToolCallRequest(_ request: ResolveKitToolCallRequest) {
+        guard !processedToolCallIDs.contains(request.callID) else {
+            ResolveKitRuntimeLogger.log("Skipping duplicate tool_call_request call_id=\(request.callID)")
+            return
+        }
+        processedToolCallIDs.insert(request.callID)
         collectingToolCalls.append(request)
         guard collectionTask == nil else { return }
         let delayMilliseconds = toolBatchCoalescingDelayMilliseconds
@@ -858,6 +1127,9 @@ public final class ResolveKitRuntime: ObservableObject {
             group.addTask { [weak self] in
                 let timeoutSeconds = call.timeoutSeconds
                 await ResolveKitCompatibility.sleep(seconds: timeoutSeconds)
+                guard !Task.isCancelled else {
+                    return .cancelled(callID: call.callID, reason: nil)
+                }
                 guard let self else {
                     return .failed(callID: call.callID, error: "Runtime deallocated")
                 }
@@ -869,7 +1141,7 @@ public final class ResolveKitRuntime: ObservableObject {
                         result: nil,
                         error: reason
                     )
-                    try? await self.webSocketClient.sendToolResult(payload)
+                    _ = await self.deliverToolResultReliably(payload)
                 }
                 return .cancelled(callID: call.callID, reason: reason)
             }
@@ -883,43 +1155,12 @@ public final class ResolveKitRuntime: ObservableObject {
     private func executeBatchStepWithoutTimeout(_ call: ResolveKitToolCallRequest) async -> BatchExecutionEvent {
         let payload = await executeToolCall(call)
         if sendToolResultsEnabled {
-            do {
-                try await webSocketClient.sendToolResult(payload)
-            } catch {
-                return .failed(callID: call.callID, error: error.localizedDescription)
-            }
+            _ = await deliverToolResultReliably(payload)
         }
         if payload.status == .success {
             return .completed(callID: call.callID)
         }
         return .failed(callID: call.callID, error: payload.error ?? "Unknown tool error")
-    }
-
-    private func sendViaSSE(_ text: String) async {
-        guard let session else {
-            failTurn("No active session")
-            return
-        }
-
-        do {
-            let stream = try await sseClient.stream(
-                sessionID: session.id,
-                text: text,
-                locale: currentLocale,
-                chatCapabilityToken: session.chatCapabilityToken
-            )
-            for try await event in stream {
-                let envelope = ResolveKitEnvelope(type: event.name, payload: event.payload)
-                await handleServerEnvelope(envelope)
-            }
-        } catch ResolveKitAPIClientError.chatUnavailable {
-            ResolveKitRuntimeLogger.log(
-                "SSE request blocked by chat_unavailable (integration disabled, chat token invalid, or provider unavailable)"
-            )
-            presentChatUnavailable()
-        } catch {
-            failTurn(error.localizedDescription)
-        }
     }
 
     private func loadReusedSessionHistory(sessionID: String, chatCapabilityToken: String) async {
@@ -950,8 +1191,52 @@ public final class ResolveKitRuntime: ObservableObject {
                 )
             }
             messages = hydrated
+            // If we were mid-turn but the server already has an assistant reply as the last
+            // message, the turn completed while we were disconnected — clear the stale state.
+            if isTurnInProgress, hydrated.last?.role == .assistant {
+                ResolveKitRuntimeLogger.log("Clearing stale in-progress turn: server history shows turn completed")
+                finalizeUnresolvedToolCallsAsTimedOut(reason: "Completed while disconnected")
+                isTurnInProgress = false
+                activeAssistantDraft = ""
+                activeAssistantMessageID = nil
+                activeTurnID = nil
+            }
         } catch {
             ResolveKitRuntimeLogger.log("Failed to load reused session history: \(error.localizedDescription)")
+        }
+    }
+
+    /// Called after a lightweight reconnect when a turn was in progress.
+    /// Waits briefly for outbox frames to arrive via WS, then polls the server
+    /// to catch any turn completion that happened while we were disconnected.
+    private func reconcileInProgressTurnAfterReconnect() async {
+        await ResolveKitCompatibility.sleep(seconds: 1.5)
+        guard isTurnInProgress, let session else { return }
+        do {
+            let history = try await apiClient.listSessionMessages(
+                sessionID: session.id,
+                chatCapabilityToken: session.chatCapabilityToken
+            )
+            let serverMessages: [ResolveKitChatMessage] = history.compactMap { message in
+                guard let content = message.content?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !content.isEmpty else { return nil }
+                let role: ResolveKitChatMessage.Role = message.role == "user" ? .user : .assistant
+                return ResolveKitChatMessage(role: role, text: content, createdAt: parseISODate(message.createdAt) ?? Date())
+            }
+            guard let lastServer = serverMessages.last, lastServer.role == .assistant else { return }
+            // Turn has completed on the server — surface the response if we don't already have it.
+            let localAssistantTexts = Set(messages.filter { $0.role == .assistant }.map(\.text))
+            if !localAssistantTexts.contains(lastServer.text) {
+                upsertAssistantDraft(lastServer.text)
+            }
+            ResolveKitRuntimeLogger.log("Reconciled missed turn completion after reconnect")
+            finalizeUnresolvedToolCallsAsTimedOut(reason: "Completed while disconnected")
+            isTurnInProgress = false
+            activeAssistantDraft = ""
+            activeAssistantMessageID = nil
+            activeTurnID = nil
+        } catch {
+            ResolveKitRuntimeLogger.log("Failed to reconcile in-progress turn after reconnect: \(error.localizedDescription)")
         }
     }
 
@@ -1000,6 +1285,7 @@ public final class ResolveKitRuntime: ObservableObject {
         toolCallBatches = []
         setToolCallBatchState(.idle)
         pendingToolCall = nil
+        processedToolCallIDs = []
     }
 
     private func setToolCallBatchState(_ newState: ResolveKitToolCallBatchState) {
@@ -1049,11 +1335,25 @@ public final class ResolveKitRuntime: ObservableObject {
         presentNextQueuedBatchIfNeeded()
     }
 
+    private func awaitTurnConfirmationOrFail(lastError: String?, maxAttempts: Int) async {
+        let timeout: TimeInterval = 3.0
+        let start = Date()
+        while Date().timeIntervalSince(start) < timeout {
+            if activeTurnID != nil {
+                ResolveKitRuntimeLogger.log("Turn confirmed via SSE after POST failure — server received the message")
+                return
+            }
+            await ResolveKitCompatibility.sleep(milliseconds: 200)
+        }
+        failTurn(lastError ?? "Message send failed after \(maxAttempts) attempts")
+    }
+
     private func failTurn(_ message: String) {
         lastError = message
         isTurnInProgress = false
         activeAssistantMessageID = nil
         connectionState = .failed
+        activeTurnID = nil
     }
 
     private func presentChatUnavailable() {
@@ -1065,6 +1365,7 @@ public final class ResolveKitRuntime: ObservableObject {
         isTurnInProgress = false
         activeAssistantDraft = ""
         activeAssistantMessageID = nil
+        activeTurnID = nil
     }
 
     public func setLocale(_ locale: String?) async {
@@ -1105,6 +1406,99 @@ public final class ResolveKitRuntime: ObservableObject {
             }
         }
     }
+
+    private func adoptSession(_ newSession: ResolveKitSession) {
+        if let previous = session,
+           previous.id != newSession.id,
+           !pendingToolResults.isEmpty {
+            ResolveKitRuntimeLogger.log(
+                "Session changed from \(previous.id) to \(newSession.id), dropping \(pendingToolResults.count) pending tool result(s)"
+            )
+            pendingToolResults = []
+        }
+        session = newSession
+        if lastReceivedEventID == nil {
+            lastReceivedEventID = UserDefaults.standard.string(forKey: "rk_cursor_\(newSession.id)")
+        }
+    }
+
+    @discardableResult
+    private func deliverToolResultReliably(_ payload: ResolveKitToolResultPayload) async -> Bool {
+        guard sendToolResultsEnabled else { return true }
+        queuePendingToolResult(payload)
+        return await flushPendingToolResults(reason: "immediate delivery retry")
+    }
+
+    private func queuePendingToolResult(_ payload: ResolveKitToolResultPayload) {
+        if let index = pendingToolResults.firstIndex(where: { $0.callID == payload.callID }) {
+            pendingToolResults[index] = payload
+        } else {
+            pendingToolResults.append(payload)
+        }
+        ResolveKitRuntimeLogger.log("Queued tool result call_id=\(payload.callID) for retry")
+    }
+
+    private func submitToolResultViaHTTP(
+        _ payload: ResolveKitToolResultPayload,
+        session: ResolveKitSession
+    ) async -> Bool {
+        guard let activeTurnID else {
+            return false
+        }
+        do {
+            try await apiClient.submitToolResult(
+                sessionID: session.id,
+                requestBody: ResolveKitToolResultRequest(
+                    turnID: activeTurnID,
+                    idempotencyKey: payload.callID,
+                    callID: payload.callID,
+                    status: payload.status,
+                    result: payload.result,
+                    error: payload.error
+                ),
+                chatCapabilityToken: session.chatCapabilityToken
+            )
+            return true
+        } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 404 || statusCode == 410 {
+            // Treat "not pending" and "session expired" as terminal for this call.
+            ResolveKitRuntimeLogger.log(
+                "HTTP tool_result submit terminal status=\(statusCode) for \(payload.callID), dropping retry"
+            )
+            return true
+        } catch {
+            ResolveKitRuntimeLogger.log("HTTP tool_result submit failed for \(payload.callID): \(error.localizedDescription)")
+            return false
+        }
+    }
+
+    @discardableResult
+    private func flushPendingToolResults(reason: String) async -> Bool {
+        guard !pendingToolResults.isEmpty else { return true }
+        guard !isFlushingPendingToolResults else { return false }
+        guard let session else {
+            ResolveKitRuntimeLogger.log("Pending tool results retained (\(pendingToolResults.count)); no active session")
+            return false
+        }
+
+        isFlushingPendingToolResults = true
+        defer { isFlushingPendingToolResults = false }
+
+        var remaining: [ResolveKitToolResultPayload] = []
+        for payload in pendingToolResults {
+            if await submitToolResultViaHTTP(payload, session: session) {
+                continue
+            }
+            remaining.append(payload)
+        }
+
+        if remaining.count != pendingToolResults.count {
+            ResolveKitRuntimeLogger.log(
+                "Flushed \(pendingToolResults.count - remaining.count) pending tool result(s) (\(reason))"
+            )
+        }
+        pendingToolResults = remaining
+        return remaining.isEmpty
+    }
 }
 
 #if DEBUG
@@ -1137,6 +1531,27 @@ extension ResolveKitRuntime {
         isTurnInProgress = inProgress
     }
 
+    func _debugSetSession(_ session: ResolveKitSession?) {
+        if let session {
+            adoptSession(session)
+        } else {
+            self.session = nil
+            pendingToolResults = []
+        }
+    }
+
+    func _debugSetActiveTurnID(_ turnID: String?) {
+        activeTurnID = turnID
+    }
+
+    func _debugPendingToolResultCallIDs() -> [String] {
+        pendingToolResults.map(\.callID)
+    }
+
+    func _debugFlushPendingToolResults() async {
+        _ = await flushPendingToolResults(reason: "debug flush")
+    }
+
     func _debugHandleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
         await handleServerEnvelope(envelope)
     }
@@ -1147,6 +1562,22 @@ extension ResolveKitRuntime {
 
     func _debugResetToolCallFlowForNewTurn() {
         resetToolCallFlowForNewTurn()
+    }
+
+    func _debugSetConnectionState(_ state: ResolveKitConnectionState) {
+        connectionState = state
+    }
+
+    func _debugHandlePathSatisfaction(_ isSatisfied: Bool) {
+        onPathSatisfactionStable(isSatisfied)
+    }
+
+    func _debugLastReconnectTrigger() -> String? {
+        lastReconnectTrigger?.rawValue
+    }
+
+    func _debugConsumeTransportFailure(_ message: String) async {
+        await handleTransportFailure(message)
     }
 }
 #endif

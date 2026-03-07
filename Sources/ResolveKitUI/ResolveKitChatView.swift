@@ -6,6 +6,12 @@ import UIKit
 import AppKit
 #endif
 
+private enum ResolveKitChatViewLogger {
+    static func log(_ message: String) {
+        print("[ResolveKit][ChatView] \(message)")
+    }
+}
+
 public struct ResolveKitChatView: View {
     private struct ScrollTrigger: Hashable {
         let messageCount: Int
@@ -512,8 +518,19 @@ public struct ResolveKitChatView: View {
 
     private func sendDraftIfPossible() {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !runtime.isTurnInProgress else { return }
+        ResolveKitChatViewLogger.log(
+            "sendDraftIfPossible draft_len=\(draft.count) trimmed_len=\(trimmed.count) turn_in_progress=\(runtime.isTurnInProgress) state=\(runtime.connectionState.rawValue)"
+        )
+        guard !trimmed.isEmpty else {
+            ResolveKitChatViewLogger.log("sendDraftIfPossible blocked empty draft")
+            return
+        }
+        guard !runtime.isTurnInProgress else {
+            ResolveKitChatViewLogger.log("sendDraftIfPossible blocked turn already in progress")
+            return
+        }
         draft = ""
+        ResolveKitChatViewLogger.log("sendDraftIfPossible dispatching runtime.sendMessage")
         Task { await runtime.sendMessage(trimmed) }
     }
 
