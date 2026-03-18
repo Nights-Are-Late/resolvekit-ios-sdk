@@ -637,6 +637,27 @@ struct ResolveKitRuntimeOutgoingMessageTests {
     }
 }
 
+@Suite("Runtime: startup")
+struct ResolveKitRuntimeStartupTests {
+    @Test("Runtime start is idempotent")
+    @MainActor
+    func runtimeStartIsIdempotent() async throws {
+        let stubSession = makeStartupStubbedSession()
+        ResolveKitStartupHTTPStub.reset()
+
+        let runtime = makeRuntime(networkSession: stubSession)
+
+        try await runtime.start()
+        try await runtime.start()
+
+        #expect(ResolveKitStartupHTTPStub.requestCount(for: "/v1/sdk/chat-theme") == 1)
+        #expect(ResolveKitStartupHTTPStub.requestCount(for: "/v1/functions/bulk") == 1)
+        #expect(ResolveKitStartupHTTPStub.requestCount(for: "/v1/sessions") == 1)
+
+        runtime.stop()
+    }
+}
+
 @MainActor
 private func makeRuntime(
     sendToolResultsEnabled: Bool = false,
@@ -678,6 +699,14 @@ private func makeToolResultStubbedSession() -> URLSession {
 private func makeMessageStubbedSession() -> URLSession {
     let configuration = URLSessionConfiguration.ephemeral
     configuration.protocolClasses = [ResolveKitMessageHTTPStub.self]
+    return URLSession(configuration: configuration)
+}
+
+private func makeStartupStubbedSession() -> URLSession {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.protocolClasses = [ResolveKitStartupHTTPStub.self]
+    configuration.timeoutIntervalForRequest = 5
+    configuration.timeoutIntervalForResource = 5
     return URLSession(configuration: configuration)
 }
 
@@ -837,6 +866,100 @@ private final class ResolveKitMessageHTTPStub: URLProtocol, @unchecked Sendable 
     }
 }
 
+private final class ResolveKitStartupHTTPStub: URLProtocol, @unchecked Sendable {
+    private static let lock = NSLock()
+    private static var requestCounts: [String: Int] = [:]
+
+    static func reset() {
+        lock.lock()
+        requestCounts = [:]
+        lock.unlock()
+    }
+
+    static func requestCount(for path: String) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return requestCounts[path, default: 0]
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        request.url?.host == "localhost"
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        request
+    }
+
+    override func startLoading() {
+        let path = request.url?.path ?? ""
+        Self.lock.lock()
+        Self.requestCounts[path, default: 0] += 1
+        Self.lock.unlock()
+
+        let response: HTTPURLResponse
+        let body: Data
+
+        switch (request.httpMethod ?? "GET", path) {
+        case ("GET", "/v1/sdk/compat"):
+            response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: [:])!
+            body = Data()
+        case ("GET", "/v1/sdk/chat-theme"):
+            response = HTTPURLResponse(url: request.url!, statusCode: 404, httpVersion: nil, headerFields: [:])!
+            body = Data()
+        case ("PUT", "/v1/functions/bulk"):
+            response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            body = Data("[]".utf8)
+        case ("POST", "/v1/sessions"):
+            response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            body = Data(
+                """
+                {
+                  "id": "session-1",
+                  "events_url": "/v1/sessions/session-1/events",
+                  "chat_capability_token": "chat-capability-token",
+                  "chat_title": "Support Chat",
+                  "message_placeholder": "Message",
+                  "initial_message": ""
+                }
+                """.utf8
+            )
+        case ("GET", "/v1/sessions/session-1/events"):
+            response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            body = Data()
+        default:
+            response = HTTPURLResponse(url: request.url!, statusCode: 500, httpVersion: nil, headerFields: nil)!
+            body = Data("Unhandled stub request: \(request.httpMethod ?? "") \(path)".utf8)
+        }
+
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        if !body.isEmpty {
+            client?.urlProtocol(self, didLoad: body)
+        }
+
+        if path != "/v1/sessions/session-1/events" {
+            client?.urlProtocolDidFinishLoading(self)
+        }
+    }
+
+    override func stopLoading() {}
+}
+
+
 @Suite("Configuration: llm context provider")
 struct ResolveKitConfigurationLLMContextTests {
     @Test("Configuration defaults to production agent URL")
@@ -938,6 +1061,123 @@ struct ResolveKitConfigurationLLMContextTests {
 
 @Suite("UI: hosting controller wrappers")
 struct ResolveKitUIHostingControllerTests {
+    @Test("Composer focus dismissal helper only changes state when focused")
+    func composerFocusDismissalHelperOnlyChangesStateWhenFocused() {
+        var state = ResolveKitChatComposerFocusState()
+
+        #expect(state.dismiss() == false)
+
+        state.isFocused = true
+
+        #expect(state.dismiss() == true)
+        #expect(state.isFocused == false)
+        #expect(state.dismiss() == false)
+    }
+
+    @Test("Initial presentation phase reveals content once and then enables live auto-scroll")
+    func initialPresentationPhaseRevealsContentThenEnablesLiveAutoScroll() {
+        var phase = ResolveKitChatInitialPresentationPhase.waitingForInitialFetch
+
+        #expect(phase.showsChatContent == false)
+        #expect(phase.allowsLiveAutoScroll == false)
+        #expect(phase.revealInitialContent() == true)
+        #expect(phase.showsChatContent == true)
+        #expect(phase.allowsLiveAutoScroll == false)
+        #expect(phase.finishInitialScroll() == true)
+        #expect(phase.allowsLiveAutoScroll == true)
+        #expect(phase.revealInitialContent() == false)
+    }
+
+    @Test("Composer focus state does not request re-anchor on focus changes")
+    func composerFocusStateDoesNotRequestReanchorOnFocusChanges() {
+        var state = ResolveKitChatComposerFocusState()
+
+        #expect(state.updateFocus(false) == false)
+        #expect(state.updateFocus(true) == false)
+        #expect(state.updateFocus(true) == false)
+        #expect(state.updateFocus(false) == false)
+        #expect(state.updateFocus(false) == false)
+    }
+
+    @Test("Chat uses interactive keyboard dismissal behavior")
+    func chatUsesInteractiveKeyboardDismissalBehavior() {
+        #expect(ResolveKitScrollKeyboardDismissBehavior.current == .interactive)
+    }
+
+    @Test("Composer drag dismissal only reacts to downward drags")
+    func composerDragDismissalOnlyReactsToDownwardDrags() {
+        #expect(ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: CGSize(width: 0, height: 18)))
+        #expect(ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: CGSize(width: 6, height: 24)))
+        #expect(ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: CGSize(width: 24, height: 18)) == false)
+        #expect(ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: CGSize(width: 0, height: 17)) == false)
+        #expect(ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: CGSize(width: 0, height: -30)) == false)
+    }
+
+    @Test("Composer drag focus only reacts to upward drags")
+    func composerDragFocusOnlyReactsToUpwardDrags() {
+        #expect(ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: CGSize(width: 0, height: -18)))
+        #expect(ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: CGSize(width: 6, height: -24)))
+        #expect(ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: CGSize(width: 24, height: -18)) == false)
+        #expect(ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: CGSize(width: 0, height: -17)) == false)
+        #expect(ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: CGSize(width: 0, height: 30)) == false)
+    }
+
+    @Test("Initial composer focus only triggers for a single fetched message")
+    func initialComposerFocusOnlyTriggersForSingleFetchedMessage() {
+        #expect(ResolveKitInitialComposerFocusPolicy.shouldFocusComposer(initialMessageCount: 1))
+        #expect(ResolveKitInitialComposerFocusPolicy.shouldFocusComposer(initialMessageCount: 0) == false)
+        #expect(ResolveKitInitialComposerFocusPolicy.shouldFocusComposer(initialMessageCount: 2) == false)
+    }
+
+    @Test("Initial presentation scroll only runs when content exceeds the viewport")
+    func initialPresentationScrollOnlyRunsWhenContentExceedsViewport() {
+        #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: 801, viewportHeight: 800))
+        #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: 800, viewportHeight: 800) == false)
+        #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: 640, viewportHeight: 800) == false)
+        #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: .infinity, viewportHeight: 800))
+    }
+
+    @Test("Composer dock keeps a small fixed bottom inset")
+    func composerDockKeepsSmallFixedBottomInset() {
+        #expect(ResolveKitChatComposerLayout.dockBottomInset() == 4)
+    }
+
+    @Test("Timeline reserve uses measured composer height plus breathing room")
+    func timelineReserveUsesMeasuredComposerHeightPlusBreathingRoom() {
+        #expect(ResolveKitChatComposerLayout.timelineBottomReserve(forComposerHeight: 0) == 12)
+        #expect(ResolveKitChatComposerLayout.timelineBottomReserve(forComposerHeight: 52) == 64)
+    }
+
+    @Test("Initial presentation scroll stays animated while settling")
+    func initialPresentationScrollStaysAnimatedWhileSettling() {
+        let plan = ResolveKitChatInitialScrollPlan.initialPresentation
+        #expect(plan.steps.count == 2)
+        #expect(plan.steps.first?.delayMilliseconds == 200)
+        #expect(plan.steps.first?.animated == true)
+        #expect(plan.steps.last?.delayMilliseconds == 420)
+        #expect(plan.steps.last?.animated == true)
+    }
+
+    @Test("Message update scroll stays fully animated while settling to bottom")
+    func messageUpdateScrollStaysFullyAnimatedWhileSettling() {
+        let plan = ResolveKitChatInitialScrollPlan.messageUpdate
+        #expect(plan.steps.count == 2)
+        #expect(plan.steps.first?.delayMilliseconds == 20)
+        #expect(plan.steps.first?.animated == true)
+        #expect(plan.steps.last?.delayMilliseconds == 140)
+        #expect(plan.steps.last?.animated == true)
+    }
+
+    @Test("Keyboard dismiss scroll starts immediately and stays animated")
+    func keyboardDismissScrollStartsImmediatelyAndStaysAnimated() {
+        let plan = ResolveKitChatInitialScrollPlan.keyboardDismiss
+        #expect(plan.steps.count == 2)
+        #expect(plan.steps.first?.delayMilliseconds == 0)
+        #expect(plan.steps.first?.animated == true)
+        #expect(plan.steps.last?.delayMilliseconds == 120)
+        #expect(plan.steps.last?.animated == true)
+    }
+
     @Test("Hosting controller keeps caller-owned runtime")
     @MainActor
     func hostingControllerKeepsCallerOwnedRuntime() {
@@ -970,12 +1210,36 @@ struct ResolveKitUIHostingControllerTests {
     }
 
     #if os(iOS)
+    @Test("Hosting controller keeps navigation item title in sync")
+    @MainActor
+    func hostingControllerKeepsNavigationItemTitleInSync() async {
+        let runtime = makeRuntime()
+        let controller = ResolveKitChatViewController(runtime: runtime)
+
+        #expect(controller.navigationItem.title == "Support Chat")
+
+        runtime._debugSetChatTitle("Concierge")
+        await Task.yield()
+
+        #expect(controller.navigationItem.title == "Concierge")
+    }
+
     @Test("Hosting controller uses UIKit superclass")
     @MainActor
     func hostingControllerUsesUIKitSuperclass() {
         let controller = ResolveKitChatViewController(runtime: makeRuntime())
         let base: UIHostingController<ResolveKitChatView> = controller
         #expect(base === controller)
+    }
+
+    @Test("Hosting controller installs native reload navigation item")
+    @MainActor
+    func hostingControllerInstallsNativeReloadNavigationItem() {
+        let controller = ResolveKitChatViewController(runtime: makeRuntime())
+
+        #expect(controller.navigationItem.rightBarButtonItem != nil)
+        #expect(controller.navigationItem.rightBarButtonItem?.action == nil)
+        #expect(controller.navigationItem.rightBarButtonItem?.primaryAction != nil)
     }
     #elseif os(macOS)
     @Test("Hosting controller uses AppKit superclass")

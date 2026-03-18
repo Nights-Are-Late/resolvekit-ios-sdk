@@ -135,6 +135,7 @@ public final class ResolveKitRuntime: ObservableObject {
     @Published public private(set) var currentLocale: String = "en"
     @Published public private(set) var chatTitle: String = "Support Chat"
     @Published public private(set) var messagePlaceholder: String = "Message"
+    @Published public private(set) var initialFetchCompleted = false
 
     private let configuration: ResolveKitConfiguration
     private let apiClient: ResolveKitAPIClient
@@ -145,6 +146,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private var session: ResolveKitSession?
     private var lastSyncedSessionContext: SessionContextSnapshot?
     private var didReuseActiveSession = false
+    private var startTask: Task<Void, Error>?
     private var eventStreamTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
     private var reconnectAttempt: Int = 0
@@ -217,11 +219,36 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     public func start() async throws {
-        startPathMonitor()
-        try await startInternal(reuseActiveSession: true)
+        if let startTask {
+            try await startTask.value
+            return
+        }
+
+        // SwiftUI view reappearance can trigger `.task` again. Once a session exists,
+        // let the existing connection/reconnect machinery continue instead of re-running startup.
+        guard session == nil else {
+            startPathMonitor()
+            return
+        }
+
+        let task = Task { @MainActor in
+            startPathMonitor()
+            try await startInternal(reuseActiveSession: true)
+        }
+        startTask = task
+
+        do {
+            try await task.value
+            startTask = nil
+        } catch {
+            startTask = nil
+            throw error
+        }
     }
 
     public func stop() {
+        startTask?.cancel()
+        startTask = nil
         stopPathMonitor()
         stopHeartbeatWatchdog()
         reconnectTask?.cancel()
@@ -240,6 +267,8 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     public func reloadWithNewSession() async {
+        startTask?.cancel()
+        startTask = nil
         stopHeartbeatWatchdog()
         reconnectTask?.cancel()
         reconnectTask = nil
@@ -257,6 +286,7 @@ public final class ResolveKitRuntime: ObservableObject {
         processedEventIDs = []
         didReuseActiveSession = false
         messages = []
+        initialFetchCompleted = false
         activeAssistantDraft = ""
         activeAssistantMessageID = nil
         lastError = nil
@@ -420,8 +450,11 @@ public final class ResolveKitRuntime: ObservableObject {
         guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
             connectionState = .blocked
             lastError = "Missing API key"
+            initialFetchCompleted = true
             return
         }
+
+        initialFetchCompleted = false
 
         do {
             try await verifySDKCompatibility()
@@ -478,6 +511,7 @@ public final class ResolveKitRuntime: ObservableObject {
             } else if session.initialMessage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
                 messages.append(.init(role: .assistant, text: session.initialMessage))
             }
+            initialFetchCompleted = true
             try await connectEventStream(eventsPath: session.eventsURL, cursor: lastReceivedEventID)
         } catch ResolveKitAPIClientError.chatUnavailable {
             ResolveKitRuntimeLogger.log(
@@ -485,8 +519,10 @@ public final class ResolveKitRuntime: ObservableObject {
             )
             connectionState = .blocked
             presentChatUnavailable()
+            initialFetchCompleted = true
             return
         } catch ResolveKitRuntimeError.unsupportedSDK {
+            initialFetchCompleted = true
             return
         } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
             consecutiveAuthFailures += 1
@@ -495,14 +531,17 @@ public final class ResolveKitRuntime: ObservableObject {
                 ResolveKitRuntimeLogger.log("Auth failed \(Self.maxConsecutiveAuthFailures) times, blocking")
                 connectionState = .blocked
                 lastError = "Authentication failed. Check your API key."
+                initialFetchCompleted = true
                 return
             }
             connectionState = .failed
             lastError = "Authentication failed – retrying"
+            initialFetchCompleted = true
             throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
+            initialFetchCompleted = true
             throw error
         }
     }

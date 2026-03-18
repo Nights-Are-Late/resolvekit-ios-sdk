@@ -9,11 +9,24 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
     public let runtime: ResolveKitRuntime
 
     private var cancellables: Set<AnyCancellable> = []
+    private lazy var reloadBarButtonItem: UIBarButtonItem = {
+        let action = UIAction { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                await self.runtime.reloadWithNewSession()
+            }
+        }
+
+        return UIBarButtonItem(
+            image: UIImage(systemName: "arrow.clockwise"),
+            primaryAction: action
+        )
+    }()
 
     public init(runtime: ResolveKitRuntime) {
         self.runtime = runtime
         super.init(rootView: ResolveKitChatView(runtime: runtime))
-        applyNavigationStyle()
+        applyNavigationChrome()
         bindRuntime()
     }
 
@@ -28,20 +41,26 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
 
     public override func viewWillAppear(_ animated: Bool) {
         super.viewWillAppear(animated)
-        applyNavigationStyle()
+        applyNavigationChrome()
     }
 
     private func bindRuntime() {
-        applyNavigationStyle()
-        title = runtime.chatTitle
+        applyNavigationChrome()
+        applyChatTitle(runtime.chatTitle)
         runtime.$chatTitle
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.title = $0 }
+            .sink { [weak self] in self?.applyChatTitle($0) }
             .store(in: &cancellables)
     }
 
-    private func applyNavigationStyle() {
+    private func applyNavigationChrome() {
         navigationItem.largeTitleDisplayMode = .never
+        navigationItem.rightBarButtonItem = reloadBarButtonItem
+    }
+
+    private func applyChatTitle(_ title: String) {
+        self.title = title
+        navigationItem.title = title
     }
 }
 #elseif os(macOS)
@@ -69,11 +88,15 @@ public final class ResolveKitChatViewController: NSHostingController<ResolveKitC
     }
 
     private func bindRuntime() {
-        title = runtime.chatTitle
+        applyChatTitle(runtime.chatTitle)
         runtime.$chatTitle
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] in self?.title = $0 }
+            .sink { [weak self] in self?.applyChatTitle($0) }
             .store(in: &cancellables)
+    }
+
+    private func applyChatTitle(_ title: String) {
+        self.title = title
     }
 }
 #endif

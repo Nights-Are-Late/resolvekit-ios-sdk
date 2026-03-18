@@ -12,6 +12,128 @@ private enum ResolveKitChatViewLogger {
     }
 }
 
+struct ResolveKitChatComposerFocusState {
+    var isFocused = false
+
+    @discardableResult
+    mutating func dismiss() -> Bool {
+        guard isFocused else { return false }
+        isFocused = false
+        return true
+    }
+
+    @discardableResult
+    mutating func updateFocus(_ newValue: Bool) -> Bool {
+        isFocused = newValue
+        return false
+    }
+}
+
+enum ResolveKitChatInitialPresentationPhase {
+    case waitingForInitialFetch
+    case renderingInitialContent
+    case finished
+
+    var showsChatContent: Bool {
+        self != .waitingForInitialFetch
+    }
+
+    var allowsLiveAutoScroll: Bool {
+        self == .finished
+    }
+
+    @discardableResult
+    mutating func revealInitialContent() -> Bool {
+        guard self == .waitingForInitialFetch else { return false }
+        self = .renderingInitialContent
+        return true
+    }
+
+    @discardableResult
+    mutating func finishInitialScroll() -> Bool {
+        guard self == .renderingInitialContent else { return false }
+        self = .finished
+        return true
+    }
+}
+
+enum ResolveKitScrollKeyboardDismissBehavior: Equatable {
+    case interactive
+}
+
+extension ResolveKitScrollKeyboardDismissBehavior {
+    static let current: ResolveKitScrollKeyboardDismissBehavior = .interactive
+}
+
+enum ResolveKitComposerGestureDismissal {
+    private static let minimumDownwardTranslation: CGFloat = 18
+    private static let minimumUpwardTranslation: CGFloat = -18
+
+    static func shouldDismissKeyboard(translation: CGSize) -> Bool {
+        translation.height >= minimumDownwardTranslation && abs(translation.height) > abs(translation.width)
+    }
+
+    static func shouldFocusKeyboard(translation: CGSize) -> Bool {
+        translation.height <= minimumUpwardTranslation && abs(translation.height) > abs(translation.width)
+    }
+}
+
+enum ResolveKitInitialComposerFocusPolicy {
+    static func shouldFocusComposer(initialMessageCount: Int) -> Bool {
+        initialMessageCount == 1
+    }
+}
+
+enum ResolveKitInitialPresentationScrollPolicy {
+    static func requiresInitialScroll(anchorMaxY: CGFloat, viewportHeight: CGFloat) -> Bool {
+        guard anchorMaxY.isFinite, viewportHeight.isFinite else { return true }
+        return anchorMaxY > viewportHeight
+    }
+}
+
+enum ResolveKitChatComposerLayout {
+    private static let closedBottomGap: CGFloat = 4
+    private static let timelineBottomBreathingRoom: CGFloat = 12
+
+    static func dockBottomInset() -> CGFloat {
+        closedBottomGap
+    }
+
+    static func timelineBottomReserve(forComposerHeight composerHeight: CGFloat) -> CGFloat {
+        composerHeight + timelineBottomBreathingRoom
+    }
+}
+
+struct ResolveKitChatInitialScrollPlan {
+    struct Step: Equatable {
+        let delayMilliseconds: UInt64
+        let animated: Bool
+    }
+
+    let steps: [Step]
+
+    static let initialPresentation = ResolveKitChatInitialScrollPlan(
+        steps: [
+            Step(delayMilliseconds: 200, animated: true),
+            Step(delayMilliseconds: 420, animated: true)
+        ]
+    )
+
+    static let messageUpdate = ResolveKitChatInitialScrollPlan(
+        steps: [
+            Step(delayMilliseconds: 20, animated: true),
+            Step(delayMilliseconds: 140, animated: true)
+        ]
+    )
+
+    static let keyboardDismiss = ResolveKitChatInitialScrollPlan(
+        steps: [
+            Step(delayMilliseconds: 0, animated: true),
+            Step(delayMilliseconds: 120, animated: true)
+        ]
+    )
+}
+
 public struct ResolveKitChatView: View {
     private struct ScrollTrigger: Hashable {
         let messageCount: Int
@@ -44,11 +166,19 @@ public struct ResolveKitChatView: View {
     private let bottomAnchorID = "chat-bottom-anchor"
     private let scrollSpring = Animation.spring(response: 0.5, dampingFraction: 0.82, blendDuration: 0.15)
     private let morphBubbleID = "assistant-response-bubble-morph"
+    private let scrollViewportCoordinateSpace = "resolvekit-chat-scroll"
     @ObservedObject private var runtime: ResolveKitRuntime
     @Environment(\.colorScheme) private var systemColorScheme
     @State private var draft = ""
+    @State private var composerFocusState = ResolveKitChatComposerFocusState()
     @State private var showThinkingIndicator = false
     @State private var thinkingDelayTask: Task<Void, Never>?
+    @State private var isPinnedToBottom = true
+    @State private var bottomAnchorMaxY: CGFloat = .infinity
+    @State private var composerHeight: CGFloat = 0
+    @State private var initialPresentationPhase = ResolveKitChatInitialPresentationPhase.waitingForInitialFetch
+    @State private var initialContentOpacity = 0.0
+    @FocusState private var isComposerFocused: Bool
     @Namespace private var bubbleMorphNamespace
 
     public init(runtime: ResolveKitRuntime) {
@@ -59,71 +189,49 @@ public struct ResolveKitChatView: View {
         GeometryReader { geometry in
             let safeAreaTop = geometry.safeAreaInsets.top
             let contentTopInset = topContentInset(safeAreaTop: safeAreaTop)
+            let reservedHeight = composerReservedHeight()
+            let composerBottomInset = composerBottomSpacing()
+            let showsChatContent = initialPresentationPhase.showsChatContent
 
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 8) {
-                        ForEach(timelineEntries) { entry in
-                            switch entry {
-                            case .message(let message):
-                                messageRow(message)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                            removal: .opacity
-                                        )
-                                    )
-                            case .toolBatch(let batch):
-                                toolBatchRow(batch)
-                                    .transition(
-                                        .asymmetric(
-                                            insertion: .scale(scale: 0.92).combined(with: .opacity),
-                                            removal: .opacity
-                                        )
-                                    )
-                            }
+                Group {
+                    if showsChatContent {
+                        ScrollView {
+                            timelineContent(contentTopInset: contentTopInset, reservedHeight: reservedHeight)
                         }
-                        if shouldShowThinkingIndicator {
-                            thinkingIndicator
-                                .transition(
-                                    .asymmetric(
-                                        insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
-                                        removal: .opacity
-                                    )
-                                )
-                        }
+                        .opacity(initialPresentationPhase.allowsLiveAutoScroll ? 1 : initialContentOpacity)
+                    } else {
                         Color.clear
-                            .frame(height: 24)
-                            .id(bottomAnchorID)
                     }
-                    .padding(.leading, 16)
-                    .padding(.trailing, 16)
-                    .padding(.top, contentTopInset)
-                    .padding(.bottom, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .ignoresSafeArea(edges: .top)
-                .safeAreaInset(edge: .bottom) {
-                    composer
-                        .padding(.horizontal)
-                        .padding(.top, 8)
-                        .padding(.bottom, 4)
-                        .background(.clear)
+                .coordinateSpace(name: scrollViewportCoordinateSpace)
+                .resolveKitScrollDismissesKeyboard()
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    if showsChatContent {
+                        composer
+                            .padding(.horizontal)
+                            .padding(.top, 8)
+                            .padding(.bottom, composerBottomInset)
+                            .background {
+                                GeometryReader { composerGeometry in
+                                    Color.clear.preference(
+                                        key: ResolveKitComposerHeightPreferenceKey.self,
+                                        value: composerGeometry.size.height
+                                    )
+                                }
+                            }
+                            .background(.clear)
+                    }
                 }
                 .task(id: scrollTrigger) {
-                    await MainActor.run {
-                        withAnimation(scrollSpring) {
-                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                        }
-                    }
-                    await ResolveKitCompatibility.sleep(milliseconds: 70)
-                    await MainActor.run {
-                        withAnimation(scrollSpring) {
-                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
-                        }
-                    }
+                    guard initialPresentationPhase.allowsLiveAutoScroll else { return }
+                    guard isPinnedToBottom else { return }
+                    await scrollToBottom(using: proxy, plan: .messageUpdate)
                 }
                 .onChange(of: showThinkingIndicator) { isVisible in
+                    guard initialPresentationPhase.allowsLiveAutoScroll else { return }
+                    guard isPinnedToBottom else { return }
                     if isVisible {
                         withAnimation(scrollSpring) {
                             proxy.scrollTo(bottomAnchorID, anchor: .bottom)
@@ -135,21 +243,75 @@ public struct ResolveKitChatView: View {
                             }
                         }
                     } else {
-                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        withAnimation(scrollSpring) {
+                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        }
                     }
                 }
-                .task {
-                    await MainActor.run {
-                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                .task(id: runtime.initialFetchCompleted) {
+                    guard runtime.initialFetchCompleted else { return }
+                    guard initialPresentationPhase.revealInitialContent() else { return }
+
+                    // Give SwiftUI one render turn to lay out the revealed timeline before deciding whether scrolling is needed.
+                    await Task.yield()
+                    let shouldFocusComposer = ResolveKitInitialComposerFocusPolicy.shouldFocusComposer(
+                        initialMessageCount: runtime.messages.count
+                    )
+                    let requiresInitialScroll = ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(
+                        anchorMaxY: bottomAnchorMaxY,
+                        viewportHeight: geometry.size.height
+                    )
+
+                    withAnimation(.easeOut(duration: 0.28)) {
+                        initialContentOpacity = 1
+                    }
+
+                    if requiresInitialScroll {
+                        await scrollToBottom(using: proxy, plan: .initialPresentation)
+                    }
+
+                    _ = initialPresentationPhase.finishInitialScroll()
+                    isPinnedToBottom = true
+                    if shouldFocusComposer && requiresInitialScroll {
+                        isComposerFocused = true
                     }
                 }
-            }
-            .background(resolvedPalette.screenBackgroundColor)
-            .preferredColorScheme(preferredColorScheme)
-            .navigationTitle(runtime.chatTitle)
-            .resolveKitInlineTransparentNavigationBar()
-            .overlay(alignment: .top) {
-                topNavigationFade(height: topFadeHeight(safeAreaTop: safeAreaTop))
+                .onPreferenceChange(ResolveKitBottomAnchorMaxYPreferenceKey.self) { anchorMaxY in
+                    guard initialPresentationPhase.showsChatContent else { return }
+                    bottomAnchorMaxY = anchorMaxY
+                    isPinnedToBottom = ResolveKitChatScrollPinning.isNearBottom(
+                        anchorMaxY: anchorMaxY,
+                        viewportHeight: geometry.size.height,
+                        tolerance: max(80, composerHeight + 24)
+                    )
+                }
+                .onPreferenceChange(ResolveKitComposerHeightPreferenceKey.self) { height in
+                    guard initialPresentationPhase.allowsLiveAutoScroll else { return }
+                    let previousHeight = composerHeight
+                    composerHeight = height
+                    guard isPinnedToBottom else { return }
+                    guard abs(previousHeight - height) > 0.5 else { return }
+
+                    Task { @MainActor in
+                        withAnimation(scrollSpring) {
+                            proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                        }
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: ResolveKitForceScrollToBottomNotification.name)) { _ in
+                    guard initialPresentationPhase.allowsLiveAutoScroll else { return }
+                    Task {
+                        await scrollToBottom(using: proxy, plan: .keyboardDismiss)
+                    }
+                }
+                .background {
+                    resolvedPalette.screenBackgroundColor
+                        .ignoresSafeArea()
+                }
+                .preferredColorScheme(preferredColorScheme)
+                .overlay(alignment: .top) {
+                    topNavigationFade(height: topFadeHeight(safeAreaTop: safeAreaTop))
+                }
             }
         }
         .task {
@@ -157,17 +319,6 @@ public struct ResolveKitChatView: View {
                 try await runtime.start()
             } catch {
                 // Runtime already updates published error state.
-            }
-        }
-        .toolbar {
-            ToolbarItem(placement: .automatic) {
-                Button {
-                    Task { await runtime.reloadWithNewSession() }
-                } label: {
-                    Image(systemName: "arrow.clockwise")
-                }
-                .accessibilityLabel("Reload chat")
-                .help("Start a new chat session")
             }
         }
         .onChange(of: isThinkingVisibleRaw) { isVisible in
@@ -192,6 +343,11 @@ public struct ResolveKitChatView: View {
         .onDisappear {
             thinkingDelayTask?.cancel()
             thinkingDelayTask = nil
+        }
+        .onChange(of: isComposerFocused) { isFocused in
+            _ = composerFocusState.updateFocus(isFocused)
+            guard isFocused else { return }
+            NotificationCenter.default.post(name: ResolveKitForceScrollToBottomNotification.name, object: nil)
         }
         .animation(
             .spring(response: 0.38, dampingFraction: 0.72, blendDuration: 0.12),
@@ -267,6 +423,85 @@ public struct ResolveKitChatView: View {
 
     private func topFadeHeight(safeAreaTop: CGFloat) -> CGFloat {
         topContentInset(safeAreaTop: safeAreaTop) + 16
+    }
+
+    private func composerBottomSpacing() -> CGFloat {
+        ResolveKitChatComposerLayout.dockBottomInset()
+    }
+
+    private func composerReservedHeight() -> CGFloat {
+        ResolveKitChatComposerLayout.timelineBottomReserve(forComposerHeight: composerHeight)
+    }
+
+    private func timelineContent(contentTopInset: CGFloat, reservedHeight: CGFloat) -> some View {
+        LazyVStack(alignment: .leading, spacing: 8) {
+            ForEach(timelineEntries) { entry in
+                timelineEntryView(entry)
+            }
+            if shouldShowThinkingIndicator {
+                thinkingIndicator
+                    .transition(
+                        .asymmetric(
+                            insertion: .scale(scale: 0.92, anchor: .leading).combined(with: .opacity),
+                            removal: .opacity
+                        )
+                    )
+            }
+            bottomAnchorSpacer(reservedHeight: reservedHeight)
+        }
+        .padding(.leading, 16)
+        .padding(.trailing, 16)
+        .padding(.top, contentTopInset)
+        .padding(.bottom, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func timelineEntryView(_ entry: TimelineEntry) -> some View {
+        Group {
+            switch entry {
+            case .message(let message):
+                messageRow(message)
+            case .toolBatch(let batch):
+                toolBatchRow(batch)
+            }
+        }
+        .transition(
+            .asymmetric(
+                insertion: .scale(scale: 0.92).combined(with: .opacity),
+                removal: .opacity
+            )
+        )
+    }
+
+    private func bottomAnchorSpacer(reservedHeight: CGFloat) -> some View {
+        Color.clear
+            .frame(height: reservedHeight)
+            .background {
+                GeometryReader { anchorGeometry in
+                    Color.clear.preference(
+                        key: ResolveKitBottomAnchorMaxYPreferenceKey.self,
+                        value: anchorGeometry.frame(in: .named(scrollViewportCoordinateSpace)).maxY
+                    )
+                }
+            }
+            .id(bottomAnchorID)
+    }
+
+    private func scrollToBottom(using proxy: ScrollViewProxy, plan: ResolveKitChatInitialScrollPlan) async {
+        for step in plan.steps {
+            if step.delayMilliseconds > 0 {
+                await ResolveKitCompatibility.sleep(milliseconds: step.delayMilliseconds)
+            }
+            await MainActor.run {
+                if step.animated {
+                    withAnimation(scrollSpring) {
+                        proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                    }
+                } else {
+                    proxy.scrollTo(bottomAnchorID, anchor: .bottom)
+                }
+            }
+        }
     }
 
     private var thinkingIndicator: some View {
@@ -482,6 +717,14 @@ public struct ResolveKitChatView: View {
                 prompt: Text(runtime.messagePlaceholder).foregroundColor(placeholderColor)
             )
                 .textFieldStyle(.plain)
+                .focused($isComposerFocused)
+                .onAppear {
+                    guard initialPresentationPhase == .renderingInitialContent else { return }
+                    guard ResolveKitInitialComposerFocusPolicy.shouldFocusComposer(initialMessageCount: runtime.messages.count) else {
+                        return
+                    }
+                    isComposerFocused = true
+                }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
                 .background(composerFieldBackground(isLoading: isComposerLoading))
@@ -497,6 +740,26 @@ public struct ResolveKitChatView: View {
                 .onSubmit {
                     sendDraftIfPossible()
                 }
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 6)
+                        .onEnded { value in
+                            if ResolveKitComposerGestureDismissal.shouldFocusKeyboard(translation: value.translation) {
+                                guard !isComposerFocused else { return }
+                                isComposerFocused = true
+                                return
+                            }
+
+                            guard isComposerFocused else { return }
+                            guard ResolveKitComposerGestureDismissal.shouldDismissKeyboard(translation: value.translation) else {
+                                return
+                            }
+                            guard dismissComposerIfNeeded() else { return }
+                            NotificationCenter.default.post(
+                                name: ResolveKitForceScrollToBottomNotification.name,
+                                object: nil
+                            )
+                        }
+                )
 
             Button("Send") {
                 sendDraftIfPossible()
@@ -529,9 +792,18 @@ public struct ResolveKitChatView: View {
             ResolveKitChatViewLogger.log("sendDraftIfPossible blocked turn already in progress")
             return
         }
+        dismissComposerIfNeeded()
         draft = ""
         ResolveKitChatViewLogger.log("sendDraftIfPossible dispatching runtime.sendMessage")
         Task { await runtime.sendMessage(trimmed) }
+    }
+
+    @discardableResult
+    private func dismissComposerIfNeeded() -> Bool {
+        composerFocusState.isFocused = isComposerFocused
+        guard composerFocusState.dismiss() else { return false }
+        isComposerFocused = composerFocusState.isFocused
+        return true
     }
 
     private func copyToClipboard(_ text: String) {
@@ -631,13 +903,45 @@ public struct ResolveKitChatView: View {
     }
 }
 
+private enum ResolveKitChatScrollPinning {
+    static func isNearBottom(anchorMaxY: CGFloat, viewportHeight: CGFloat, tolerance: CGFloat = 24) -> Bool {
+        guard anchorMaxY.isFinite, viewportHeight.isFinite else { return true }
+        return anchorMaxY <= viewportHeight + tolerance
+    }
+}
+
+private enum ResolveKitForceScrollToBottomNotification {
+    static let name = Notification.Name("ResolveKitForceScrollToBottomNotification")
+}
+
+private struct ResolveKitBottomAnchorMaxYPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = .infinity
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
+private struct ResolveKitComposerHeightPreferenceKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = nextValue()
+    }
+}
+
 private extension View {
     @ViewBuilder
-    func resolveKitInlineTransparentNavigationBar() -> some View {
+    func resolveKitScrollDismissesKeyboard() -> some View {
         #if os(iOS)
-        self
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.hidden, for: .navigationBar)
+        if #available(iOS 16, *) {
+            switch ResolveKitScrollKeyboardDismissBehavior.current {
+            case .interactive:
+                self.scrollDismissesKeyboard(.interactively)
+            }
+        } else {
+            self
+        }
         #else
         self
         #endif
