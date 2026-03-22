@@ -639,6 +639,33 @@ struct ResolveKitRuntimeOutgoingMessageTests {
         #expect(request.path == "/v1/sessions/session-1/messages")
     }
 
+    @Test("Prepare reload clears transient error before async reload starts")
+    @MainActor
+    func prepareReloadClearsTransientErrorBeforeAsyncReloadStarts() {
+        let runtime = makeRuntime()
+        runtime._debugSetChatPresentationError(.from(rawMessage: "Heartbeat timeout"))
+        runtime._debugSetInitialFetchCompleted(true)
+
+        runtime.prepareForReloadWithNewSession()
+
+        #expect(runtime._debugChatPresentationError() == nil)
+        #expect(runtime.initialFetchCompleted == false)
+        #expect(runtime.messages.isEmpty)
+    }
+
+    @Test("Prepare reload suppresses stale transport errors until reload finishes")
+    @MainActor
+    func prepareReloadSuppressesStaleTransportErrorsUntilReloadFinishes() async {
+        let runtime = makeRuntime()
+
+        runtime.prepareForReloadWithNewSession()
+        await runtime._debugConsumeTransportFailure("The Internet connection appears to be offline.")
+
+        #expect(runtime._debugChatPresentationError() == nil)
+        #expect(runtime.lastError == nil)
+        #expect(runtime.initialFetchCompleted == false)
+    }
+
     @Test("Starting a new send clears any transient chat presentation error")
     @MainActor
     func startingNewSendClearsTransientChatPresentationError() async throws {
@@ -1170,6 +1197,17 @@ struct ResolveKitUIHostingControllerTests {
         #expect(phase.revealInitialContent() == false)
     }
 
+    @Test("Initial presentation phase resets back to waiting state for reload")
+    func initialPresentationPhaseResetsBackToWaitingStateForReload() {
+        var phase = ResolveKitChatInitialPresentationPhase.finished
+
+        #expect(phase.resetForReload() == true)
+        #expect(phase == .waitingForInitialFetch)
+        #expect(phase.showsChatContent == false)
+        #expect(phase.allowsLiveAutoScroll == false)
+        #expect(phase.resetForReload() == false)
+    }
+
     @Test("Composer focus state does not request re-anchor on focus changes")
     func composerFocusStateDoesNotRequestReanchorOnFocusChanges() {
         var state = ResolveKitChatComposerFocusState()
@@ -1184,6 +1222,34 @@ struct ResolveKitUIHostingControllerTests {
     @Test("Chat uses interactive keyboard dismissal behavior")
     func chatUsesInteractiveKeyboardDismissalBehavior() {
         #expect(ResolveKitScrollKeyboardDismissBehavior.current == .interactive)
+    }
+
+    @Test("Reload button stays disabled until initial fetch completes")
+    func reloadButtonStaysDisabledUntilInitialFetchCompletes() {
+        #expect(ResolveKitReloadButtonPolicy.isEnabled(initialFetchCompleted: false) == false)
+        #expect(ResolveKitReloadButtonPolicy.isEnabled(initialFetchCompleted: true))
+    }
+
+    @Test("Composer stays disabled until initial fetch completes")
+    func composerStaysDisabledUntilInitialFetchCompletes() {
+        #expect(
+            ResolveKitComposerInteractivityPolicy.isEnabled(
+                initialFetchCompleted: false,
+                isTurnInProgress: false
+            ) == false
+        )
+        #expect(
+            ResolveKitComposerInteractivityPolicy.isEnabled(
+                initialFetchCompleted: true,
+                isTurnInProgress: false
+            )
+        )
+        #expect(
+            ResolveKitComposerInteractivityPolicy.isEnabled(
+                initialFetchCompleted: true,
+                isTurnInProgress: true
+            ) == false
+        )
     }
 
     @Test("Composer drag dismissal only reacts to downward drags")
@@ -1406,6 +1472,20 @@ struct ResolveKitUIHostingControllerTests {
         #expect(controller.navigationItem.rightBarButtonItem != nil)
         #expect(controller.navigationItem.rightBarButtonItem?.action == nil)
         #expect(controller.navigationItem.rightBarButtonItem?.primaryAction != nil)
+    }
+
+    @Test("Hosting controller disables reload button until initial fetch completes")
+    @MainActor
+    func hostingControllerDisablesReloadButtonUntilInitialFetchCompletes() async {
+        let runtime = makeRuntime()
+        let controller = ResolveKitChatViewController(runtime: runtime)
+
+        #expect(controller.navigationItem.rightBarButtonItem?.isEnabled == false)
+
+        runtime._debugSetInitialFetchCompleted(true)
+        await Task.yield()
+
+        #expect(controller.navigationItem.rightBarButtonItem?.isEnabled == true)
     }
     #elseif os(macOS)
     @Test("Hosting controller uses AppKit superclass")

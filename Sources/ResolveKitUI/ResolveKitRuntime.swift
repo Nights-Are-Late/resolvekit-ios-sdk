@@ -218,6 +218,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private var session: ResolveKitSession?
     private var lastSyncedSessionContext: SessionContextSnapshot?
     private var didReuseActiveSession = false
+    private var isReloadingWithNewSession = false
     private var startTask: Task<Void, Error>?
     private var eventStreamTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
@@ -338,7 +339,8 @@ public final class ResolveKitRuntime: ObservableObject {
         connectionState = .idle
     }
 
-    public func reloadWithNewSession() async {
+    public func prepareForReloadWithNewSession() {
+        isReloadingWithNewSession = true
         startTask?.cancel()
         startTask = nil
         stopHeartbeatWatchdog()
@@ -365,6 +367,11 @@ public final class ResolveKitRuntime: ObservableObject {
         clearChatPresentationError()
         isTurnInProgress = false
         resetToolCallFlowForNewTurn()
+    }
+
+    public func reloadWithNewSession() async {
+        prepareForReloadWithNewSession()
+        defer { isReloadingWithNewSession = false }
         do {
             try await startInternal(reuseActiveSession: false)
         } catch {
@@ -416,9 +423,11 @@ public final class ResolveKitRuntime: ObservableObject {
             try await connectEventStream(eventsPath: existingSession.eventsURL, cursor: lastReceivedEventID)
         } catch ResolveKitAPIClientError.chatUnavailable {
             ResolveKitRuntimeLogger.log("Reconnect blocked by chat_unavailable")
+            guard !isReloadingWithNewSession else { return }
             connectionState = .blocked
             presentChatUnavailable()
         } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 401 {
+            guard !isReloadingWithNewSession else { return }
             consecutiveAuthFailures += 1
             ResolveKitRuntimeLogger.log("Auth failed during reconnect (attempt \(consecutiveAuthFailures)/\(Self.maxConsecutiveAuthFailures))")
             if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
@@ -437,6 +446,7 @@ public final class ResolveKitRuntime: ObservableObject {
             session = nil
             try await startInternal(reuseActiveSession: true)
         } catch {
+            guard !isReloadingWithNewSession else { return }
             connectionState = .failed
             lastError = error.localizedDescription
             presentChatPresentationError(error)
@@ -1044,6 +1054,10 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     private func handleTransportFailure(_ message: String) async {
+        if isReloadingWithNewSession {
+            ResolveKitRuntimeLogger.log("Suppressing transport failure during reload: \(message)")
+            return
+        }
         stopHeartbeatWatchdog()
         if lastError == unavailableMessage {
             connectionState = .blocked
@@ -1089,6 +1103,10 @@ public final class ResolveKitRuntime: ObservableObject {
     }
 
     private func handleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
+        if isReloadingWithNewSession {
+            ResolveKitRuntimeLogger.log("Suppressing server envelope during reload: \(envelope.type)")
+            return
+        }
         if isTurnInProgress, activeTurnID == nil, let turnID = envelope.turnID {
             ResolveKitRuntimeLogger.log("Adopting orphaned turn from SSE event turn_id=\(turnID)")
             activeTurnID = turnID
@@ -1741,6 +1759,10 @@ extension ResolveKitRuntime {
 
     func _debugSetChatPresentationError(_ error: ResolveKitChatPresentationError?) {
         chatPresentationError = error
+    }
+
+    func _debugSetInitialFetchCompleted(_ completed: Bool) {
+        initialFetchCompleted = completed
     }
 }
 #endif

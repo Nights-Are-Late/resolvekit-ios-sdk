@@ -1,6 +1,12 @@
 import Combine
 import SwiftUI
 
+enum ResolveKitReloadButtonPolicy {
+    static func isEnabled(initialFetchCompleted: Bool) -> Bool {
+        initialFetchCompleted
+    }
+}
+
 #if os(iOS)
 import UIKit
 
@@ -12,6 +18,7 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
     private lazy var reloadBarButtonItem: UIBarButtonItem = {
         let action = UIAction { [weak self] _ in
             guard let self else { return }
+            self.runtime.prepareForReloadWithNewSession()
             Task { @MainActor in
                 await self.runtime.reloadWithNewSession()
             }
@@ -47,9 +54,20 @@ public final class ResolveKitChatViewController: UIHostingController<ResolveKitC
     private func bindRuntime() {
         applyNavigationChrome()
         applyChatTitle(runtime.chatTitle)
+        reloadBarButtonItem.isEnabled = ResolveKitReloadButtonPolicy.isEnabled(
+            initialFetchCompleted: runtime.initialFetchCompleted
+        )
         runtime.$chatTitle
             .receive(on: DispatchQueue.main)
             .sink { [weak self] in self?.applyChatTitle($0) }
+            .store(in: &cancellables)
+        runtime.$initialFetchCompleted
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] completed in
+                self?.reloadBarButtonItem.isEnabled = ResolveKitReloadButtonPolicy.isEnabled(
+                    initialFetchCompleted: completed
+                )
+            }
             .store(in: &cancellables)
     }
 

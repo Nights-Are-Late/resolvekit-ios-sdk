@@ -55,6 +55,13 @@ enum ResolveKitChatInitialPresentationPhase {
         self = .finished
         return true
     }
+
+    @discardableResult
+    mutating func resetForReload() -> Bool {
+        guard self != .waitingForInitialFetch else { return false }
+        self = .waitingForInitialFetch
+        return true
+    }
 }
 
 enum ResolveKitScrollKeyboardDismissBehavior: Equatable {
@@ -153,6 +160,12 @@ enum ResolveKitChatComposerLayout {
 
     static func timelineBottomReserve(forComposerHeight composerHeight: CGFloat) -> CGFloat {
         composerHeight + timelineBottomBreathingRoom
+    }
+}
+
+enum ResolveKitComposerInteractivityPolicy {
+    static func isEnabled(initialFetchCompleted: Bool, isTurnInProgress: Bool) -> Bool {
+        initialFetchCompleted && !isTurnInProgress
     }
 }
 
@@ -261,21 +274,19 @@ public struct ResolveKitChatView: View {
                 .coordinateSpace(name: scrollViewportCoordinateSpace)
                 .resolveKitScrollDismissesKeyboard()
                 .safeAreaInset(edge: .bottom, spacing: 0) {
-                    if showsChatContent {
-                        composer
-                            .padding(.horizontal)
-                            .padding(.top, 8)
-                            .padding(.bottom, composerBottomInset)
-                            .background {
-                                GeometryReader { composerGeometry in
-                                    Color.clear.preference(
-                                        key: ResolveKitComposerHeightPreferenceKey.self,
-                                        value: composerGeometry.size.height
-                                    )
-                                }
+                    composer
+                        .padding(.horizontal)
+                        .padding(.top, 8)
+                        .padding(.bottom, composerBottomInset)
+                        .background {
+                            GeometryReader { composerGeometry in
+                                Color.clear.preference(
+                                    key: ResolveKitComposerHeightPreferenceKey.self,
+                                    value: composerGeometry.size.height
+                                )
                             }
-                            .background(.clear)
-                    }
+                        }
+                        .background(.clear)
                 }
                 .task(id: scrollTrigger) {
                     guard initialPresentationPhase.allowsLiveAutoScroll else { return }
@@ -328,6 +339,12 @@ public struct ResolveKitChatView: View {
                     if shouldFocusComposer && requiresInitialScroll {
                         isComposerFocused = true
                     }
+                }
+                .onChange(of: runtime.initialFetchCompleted) { completed in
+                    guard completed == false else { return }
+                    guard initialPresentationPhase.resetForReload() else { return }
+                    initialContentOpacity = 0
+                    isPinnedToBottom = true
                 }
                 .onPreferenceChange(ResolveKitBottomAnchorMaxYPreferenceKey.self) { anchorMaxY in
                     guard initialPresentationPhase.showsChatContent else { return }
@@ -810,7 +827,10 @@ public struct ResolveKitChatView: View {
     }
 
     private var isComposerLoading: Bool {
-        runtime.isTurnInProgress
+        !ResolveKitComposerInteractivityPolicy.isEnabled(
+            initialFetchCompleted: runtime.initialFetchCompleted,
+            isTurnInProgress: runtime.isTurnInProgress
+        )
     }
 
     private var composer: some View {
