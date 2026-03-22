@@ -122,10 +122,10 @@ struct ResolveKitOpenSourcePackageContractTests {
         #expect(!package.contains(".target(\n            name: \"ResolveKitCore\",\n            dependencies: [\n                \"ResolveKitMacros\"\n            ]\n        )"))
     }
 
-    @Test("README package example references the 1.0.1 source release")
+    @Test("README package example references the latest source release")
     func readmeReferencesSourceRelease() throws {
         let readme = try String(contentsOf: sdkRoot.appendingPathComponent("README.md"))
-        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"1.0.1\")"))
+        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"1.4.2\")"))
         #expect(readme.contains("- iOS 16+ / macOS 12+"))
         #expect(readme.contains("- Swift 5.9+ toolchain"))
         #expect(readme.contains("apps that remain in Swift 5 language mode"))

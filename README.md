@@ -27,7 +27,7 @@ Or add it manually to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Nights-Are-Late/resolvekit-ios-sdk", from: "1.0.1")
+    .package(url: "https://github.com/Nights-Are-Late/resolvekit-ios-sdk", from: "1.4.2")
 ],
 targets: [
     .target(
@@ -108,6 +108,7 @@ struct ContentView: View {
 #### UIKit
 
 Use `ResolveKitChatViewController` when your app is built around `UIViewController`.
+Present the chat view controller directly, for example in a modal `UINavigationController`, instead of adding it as a child and embedding its view manually.
 
 ```swift
 import UIKit
@@ -119,20 +120,10 @@ final class ChatHostViewController: UIViewController {
         functions: [GetLocalTime.self]
     ))
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
+    @IBAction func openChat(_ sender: Any?) {
         let chat = ResolveKitChatViewController(runtime: runtime)
-        addChild(chat)
-        chat.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(chat.view)
-        NSLayoutConstraint.activate([
-            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
-            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-        chat.didMove(toParent: self)
+        let navigationController = UINavigationController(rootViewController: chat)
+        present(navigationController, animated: true)
     }
 }
 ```
@@ -162,20 +153,9 @@ final class ChatHostViewController: NSViewController {
         functions: [GetLocalTime.self]
     ))
 
-    override func viewDidLoad() {
-        super.viewDidLoad()
-
+    @IBAction func openChat(_ sender: Any?) {
         let chat = ResolveKitChatViewController(runtime: runtime)
-        addChild(chat)
-        chat.view.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(chat.view)
-        NSLayoutConstraint.activate([
-            chat.view.topAnchor.constraint(equalTo: view.topAnchor),
-            chat.view.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            chat.view.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            chat.view.bottomAnchor.constraint(equalTo: view.bottomAnchor)
-        ])
-        chat.didMove(toParent: self)
+        presentAsModalWindow(chat)
     }
 }
 ```
