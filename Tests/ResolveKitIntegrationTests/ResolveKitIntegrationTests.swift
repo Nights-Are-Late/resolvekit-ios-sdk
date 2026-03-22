@@ -434,9 +434,9 @@ struct ResolveKitRuntimeBatchTests {
         #expect(runtime.toolCallBatchState == .idle)
     }
 
-    @Test("chat unavailable frame shows generic assistant message")
+    @Test("chat unavailable frame shows transient assistant error bubble")
     @MainActor
-    func chatUnavailableFrameShowsAssistantFallback() async {
+    func chatUnavailableFrameShowsTransientAssistantFallback() async throws {
         let runtime = makeRuntime()
         runtime._debugSetTurnInProgress(true)
 
@@ -452,8 +452,9 @@ struct ResolveKitRuntimeBatchTests {
 
         #expect(runtime.isTurnInProgress == false)
         #expect(runtime.lastError == "Chat is unavailable, try again later")
-        #expect(runtime.messages.last?.role == .assistant)
-        #expect(runtime.messages.last?.text == "Chat is unavailable, try again later")
+        let presentationError = try #require(runtime._debugChatPresentationError())
+        #expect(presentationError.message == "We couldn’t reach chat right now.")
+        #expect(runtime.messages.isEmpty)
     }
 }
 
@@ -525,16 +526,18 @@ struct ResolveKitRuntimeReconnectDiagnosticsTests {
         runtime.stop()
     }
 
-    @Test("Transport failure keeps turn in progress for reconnect continuity")
+    @Test("Transport failure ends the active turn and shows transient error state")
     @MainActor
-    func transportFailureKeepsTurnInProgressForReconnectContinuity() async {
+    func transportFailureEndsActiveTurnAndShowsTransientErrorState() async throws {
         let runtime = makeRuntime()
         runtime._debugSetConnectionState(.active)
         runtime._debugSetTurnInProgress(true)
 
         await runtime._debugConsumeTransportFailure("synthetic failure")
 
-        #expect(runtime.isTurnInProgress)
+        #expect(runtime.isTurnInProgress == false)
+        let presentationError = try #require(runtime._debugChatPresentationError())
+        #expect(presentationError.category == .generic)
         runtime.stop()
     }
 }
@@ -634,6 +637,85 @@ struct ResolveKitRuntimeOutgoingMessageTests {
 
         let request = try #require(ResolveKitMessageHTTPStub.requests.first { $0.payload?.text == "Hello after connect" })
         #expect(request.path == "/v1/sessions/session-1/messages")
+    }
+
+    @Test("Starting a new send clears any transient chat presentation error")
+    @MainActor
+    func startingNewSendClearsTransientChatPresentationError() async throws {
+        let stubSession = makeMessageStubbedSession()
+        ResolveKitMessageHTTPStub.reset()
+
+        let runtime = makeRuntime(networkSession: stubSession)
+        runtime._debugSetSession(
+            ResolveKitSession(
+                id: "session-1",
+                eventsURL: "/v1/sessions/session-1/events",
+                chatCapabilityToken: "chat-capability-token"
+            )
+        )
+        runtime._debugSetConnectionState(.active)
+        runtime._debugSetChatPresentationError(.from(rawMessage: "Heartbeat timeout"))
+
+        await runtime.sendMessage("Retry this")
+
+        #expect(runtime._debugChatPresentationError() == nil)
+    }
+}
+
+@Suite("Runtime: transient chat presentation errors")
+struct ResolveKitRuntimePresentationErrorTests {
+    @Test("Transport failure replaces active assistant draft with transient timeout bubble")
+    @MainActor
+    func transportFailureReplacesActiveAssistantDraftWithTransientTimeoutBubble() async throws {
+        let runtime = makeRuntime()
+        runtime._debugSetConnectionState(.active)
+        runtime._debugSetTurnInProgress(true)
+
+        await runtime._debugHandleServerEnvelope(
+            ResolveKitEnvelope(
+                type: "assistant_text_delta",
+                turnID: "turn-1",
+                payload: [
+                    "delta": .string("Partial"),
+                    "accumulated": .string("Partial response")
+                ]
+            )
+        )
+
+        #expect(runtime.messages.count == 1)
+        #expect(runtime.messages.first?.text == "Partial response")
+
+        await runtime._debugConsumeTransportFailure("Heartbeat timeout")
+
+        let presentationError = try #require(runtime._debugChatPresentationError())
+        #expect(presentationError.category == .timeout)
+        #expect(presentationError.message == "This response is taking longer than expected.")
+        #expect(runtime.messages.isEmpty)
+        #expect(runtime.isTurnInProgress == false)
+    }
+
+    @Test("Chat unavailable server error stays transient instead of appending assistant history")
+    @MainActor
+    func chatUnavailableServerErrorStaysTransientInsteadOfAppendingAssistantHistory() async throws {
+        let runtime = makeRuntime()
+        runtime._debugSetTurnInProgress(true)
+
+        await runtime._debugHandleServerEnvelope(
+            ResolveKitEnvelope(
+                type: "error",
+                turnID: "turn-1",
+                payload: [
+                    "code": .string("chat_unavailable"),
+                    "message": .string("Chat is unavailable, try again later"),
+                    "recoverable": .bool(false)
+                ]
+            )
+        )
+
+        let presentationError = try #require(runtime._debugChatPresentationError())
+        #expect(presentationError.message == "We couldn’t reach chat right now.")
+        #expect(runtime.messages.isEmpty)
+        #expect(runtime.isTurnInProgress == false)
     }
 }
 
@@ -1135,6 +1217,90 @@ struct ResolveKitUIHostingControllerTests {
         #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: 800, viewportHeight: 800) == false)
         #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: 640, viewportHeight: 800) == false)
         #expect(ResolveKitInitialPresentationScrollPolicy.requiresInitialScroll(anchorMaxY: .infinity, viewportHeight: 800))
+    }
+
+    @Test("Initial fetch loading shows thinking bubble")
+    func initialFetchLoadingShowsThinkingBubble() {
+        #expect(
+            ResolveKitThinkingIndicatorVisibilityPolicy.shouldShowThinkingIndicator(
+                initialFetchCompleted: false,
+                isTurnInProgress: false,
+                toolChecklistCount: 0
+            )
+        )
+    }
+
+    @Test("Thinking indicator schedules delayed show when visibility becomes true")
+    func thinkingIndicatorSchedulesDelayedShowWhenVisibilityBecomesTrue() {
+        #expect(
+            ResolveKitThinkingIndicatorTransitionPolicy.transition(for: true) == .scheduleShow(delayMilliseconds: 500)
+        )
+    }
+
+    @Test("Thinking indicator does not morph into assistant message during initial fetch")
+    func thinkingIndicatorDoesNotMorphIntoAssistantMessageDuringInitialFetch() {
+        #expect(
+            ResolveKitThinkingIndicatorMorphPolicy.morphTargetAssistantID(
+                showThinkingIndicator: true,
+                initialFetchCompleted: false,
+                lastMessage: ResolveKitChatMessage(role: .assistant, text: "Welcome")
+            ) == nil
+        )
+    }
+
+    @Test("Transient error maps timeout failures into customer-facing recovery copy")
+    func transientErrorMapsTimeoutFailuresIntoCustomerFacingRecoveryCopy() {
+        let presentationError = ResolveKitChatPresentationError.from(rawMessage: "Heartbeat timeout")
+
+        #expect(presentationError.category == .timeout)
+        #expect(presentationError.message == "This response is taking longer than expected.")
+        #expect(presentationError.recoverySuggestion == "Reload the chat or try again later.")
+        #expect(presentationError.hidesAssistantDraft)
+    }
+
+    @Test("Transient error maps offline failures into customer-facing recovery copy")
+    func transientErrorMapsOfflineFailuresIntoCustomerFacingRecoveryCopy() {
+        let presentationError = ResolveKitChatPresentationError.from(
+            rawMessage: "The Internet connection appears to be offline."
+        )
+
+        #expect(presentationError.category == .network)
+        #expect(presentationError.message == "You’re offline right now.")
+        #expect(presentationError.recoverySuggestion == "Reload the chat or try again later.")
+        #expect(presentationError.hidesAssistantDraft)
+    }
+
+    @Test("Transient error maps unknown failures into generic recovery copy")
+    func transientErrorMapsUnknownFailuresIntoGenericRecoveryCopy() {
+        let presentationError = ResolveKitChatPresentationError.from(rawMessage: "Socket closed unexpectedly")
+
+        #expect(presentationError.category == .generic)
+        #expect(presentationError.message == "We couldn’t reach chat right now.")
+        #expect(presentationError.recoverySuggestion == "Reload the chat or try again later.")
+        #expect(presentationError.hidesAssistantDraft)
+    }
+
+    @Test("Transient error bubble suppresses thinking indicator and morph target")
+    func transientErrorBubbleSuppressesThinkingIndicatorAndMorphTarget() {
+        let presentationError = ResolveKitChatPresentationError.from(rawMessage: "Heartbeat timeout")
+        let assistantMessage = ResolveKitChatMessage(role: .assistant, text: "Partial response")
+
+        #expect(
+            ResolveKitThinkingIndicatorVisibilityPolicy.shouldShowThinkingIndicator(
+                initialFetchCompleted: true,
+                isTurnInProgress: true,
+                toolChecklistCount: 0,
+                presentationError: presentationError
+            ) == false
+        )
+        #expect(
+            ResolveKitThinkingIndicatorMorphPolicy.morphTargetAssistantID(
+                showThinkingIndicator: true,
+                initialFetchCompleted: true,
+                lastMessage: assistantMessage,
+                presentationError: presentationError
+            ) == nil
+        )
     }
 
     @Test("Composer dock keeps a small fixed bottom inset")

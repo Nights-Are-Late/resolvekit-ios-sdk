@@ -119,6 +119,77 @@ public struct ToolCallChecklistBatch: Identifiable, Equatable, Sendable {
     public let createdAt: Date
 }
 
+public struct ResolveKitChatPresentationError: Equatable, Sendable {
+    public enum Category: Equatable, Sendable {
+        case network
+        case timeout
+        case generic
+    }
+
+    public let category: Category
+    public let message: String
+    public let recoverySuggestion: String
+    public let hidesAssistantDraft: Bool
+
+    public init(
+        category: Category,
+        message: String,
+        recoverySuggestion: String = "Reload the chat or try again later.",
+        hidesAssistantDraft: Bool = true
+    ) {
+        self.category = category
+        self.message = message
+        self.recoverySuggestion = recoverySuggestion
+        self.hidesAssistantDraft = hidesAssistantDraft
+    }
+
+    static func from(rawMessage: String) -> ResolveKitChatPresentationError {
+        let normalized = rawMessage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+        if normalized.contains("offline")
+            || normalized.contains("not connected")
+            || normalized.contains("network unavailable")
+            || normalized.contains("internet connection") {
+            return ResolveKitChatPresentationError(
+                category: .network,
+                message: "You’re offline right now."
+            )
+        }
+
+        if normalized.contains("timeout")
+            || normalized.contains("timed out")
+            || normalized.contains("deadline exceeded") {
+            return ResolveKitChatPresentationError(
+                category: .timeout,
+                message: "This response is taking longer than expected."
+            )
+        }
+
+        return ResolveKitChatPresentationError(
+            category: .generic,
+            message: "We couldn’t reach chat right now."
+        )
+    }
+
+    static func from(error: Error) -> ResolveKitChatPresentationError {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed, .internationalRoamingOff:
+                return ResolveKitChatPresentationError(category: .network, message: "You’re offline right now.")
+            case .timedOut:
+                return ResolveKitChatPresentationError(
+                    category: .timeout,
+                    message: "This response is taking longer than expected."
+                )
+            default:
+                break
+            }
+        }
+
+        return from(rawMessage: error.localizedDescription)
+    }
+}
+
 @MainActor
 public final class ResolveKitRuntime: ObservableObject {
     @Published public private(set) var messages: [ResolveKitChatMessage] = []
@@ -130,6 +201,7 @@ public final class ResolveKitRuntime: ObservableObject {
     @Published public private(set) var toolCallBatches: [ToolCallChecklistBatch] = []
     @Published public private(set) var executionLog: [String] = []
     @Published public private(set) var lastError: String?
+    @Published public private(set) var chatPresentationError: ResolveKitChatPresentationError?
     @Published public private(set) var chatTheme: ResolveKitChatTheme = .default
     @Published public private(set) var appearanceMode: ResolveKitAppearanceMode = .system
     @Published public private(set) var currentLocale: String = "en"
@@ -290,6 +362,7 @@ public final class ResolveKitRuntime: ObservableObject {
         activeAssistantDraft = ""
         activeAssistantMessageID = nil
         lastError = nil
+        clearChatPresentationError()
         isTurnInProgress = false
         resetToolCallFlowForNewTurn()
         do {
@@ -330,6 +403,7 @@ public final class ResolveKitRuntime: ObservableObject {
         guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
             connectionState = .blocked
             lastError = "Missing API key"
+            presentChatPresentationError(rawMessage: lastError ?? "Missing API key")
             return
         }
         guard let existingSession = session else {
@@ -350,10 +424,12 @@ public final class ResolveKitRuntime: ObservableObject {
             if consecutiveAuthFailures >= Self.maxConsecutiveAuthFailures {
                 connectionState = .blocked
                 lastError = "Authentication failed. Check your API key."
+                presentChatPresentationError(rawMessage: lastError ?? "Authentication failed")
                 return
             }
             connectionState = .failed
             lastError = "Authentication failed – retrying"
+            presentChatPresentationError(rawMessage: lastError ?? "Authentication failed")
             throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch ResolveKitAPIClientError.serverError(let statusCode, _) where statusCode == 404 {
             // Session expired on the server — restart fully to get a new session.
@@ -363,6 +439,7 @@ public final class ResolveKitRuntime: ObservableObject {
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
+            presentChatPresentationError(error)
             throw error
         }
     }
@@ -450,6 +527,7 @@ public final class ResolveKitRuntime: ObservableObject {
         guard let key = configuration.apiKeyProvider(), !key.isEmpty else {
             connectionState = .blocked
             lastError = "Missing API key"
+            presentChatPresentationError(rawMessage: lastError ?? "Missing API key")
             initialFetchCompleted = true
             return
         }
@@ -497,6 +575,7 @@ public final class ResolveKitRuntime: ObservableObject {
                 )
             )
             adoptSession(session)
+            clearChatPresentationError()
             lastSyncedSessionContext = contextSnapshot
             currentLocale = ResolveKitLocaleResolver.resolve(
                 locale: session.locale,
@@ -531,16 +610,19 @@ public final class ResolveKitRuntime: ObservableObject {
                 ResolveKitRuntimeLogger.log("Auth failed \(Self.maxConsecutiveAuthFailures) times, blocking")
                 connectionState = .blocked
                 lastError = "Authentication failed. Check your API key."
+                presentChatPresentationError(rawMessage: lastError ?? "Authentication failed")
                 initialFetchCompleted = true
                 return
             }
             connectionState = .failed
             lastError = "Authentication failed – retrying"
+            presentChatPresentationError(rawMessage: lastError ?? "Authentication failed")
             initialFetchCompleted = true
             throw ResolveKitAPIClientError.serverError(statusCode: statusCode, message: "Auth retry")
         } catch {
             connectionState = .failed
             lastError = error.localizedDescription
+            presentChatPresentationError(error)
             initialFetchCompleted = true
             throw error
         }
@@ -573,6 +655,7 @@ public final class ResolveKitRuntime: ObservableObject {
         isTurnInProgress = true
         activeAssistantDraft = ""
         activeAssistantMessageID = nil
+        clearChatPresentationError()
         resetToolCallFlowForNewTurn()
 
         do {
@@ -931,6 +1014,7 @@ public final class ResolveKitRuntime: ObservableObject {
         )
         let isReconnectWithTurnInProgress = session != nil && isTurnInProgress
         connectionState = didReuseActiveSession || cursor != nil ? .reconnected : .active
+        clearChatPresentationError()
         reconnectAttempt = 0
         consecutiveAuthFailures = 0
         startHeartbeatWatchdog()
@@ -967,9 +1051,41 @@ public final class ResolveKitRuntime: ObservableObject {
         }
         connectionState = .failed
         lastError = message
+        isTurnInProgress = false
+        activeTurnID = nil
+        presentChatPresentationError(rawMessage: message)
         if connectionState == .failed {
             scheduleReconnect(trigger: .transportFailure)
         }
+    }
+
+    private func presentChatPresentationError(_ error: ResolveKitChatPresentationError) {
+        if error.hidesAssistantDraft {
+            discardActiveAssistantDraft()
+        }
+        chatPresentationError = error
+    }
+
+    private func presentChatPresentationError(rawMessage: String) {
+        presentChatPresentationError(.from(rawMessage: rawMessage))
+    }
+
+    private func presentChatPresentationError(_ error: Error) {
+        presentChatPresentationError(.from(error: error))
+    }
+
+    private func clearChatPresentationError() {
+        chatPresentationError = nil
+    }
+
+    private func discardActiveAssistantDraft() {
+        guard let activeAssistantMessageID else {
+            activeAssistantDraft = ""
+            return
+        }
+        messages.removeAll { $0.id == activeAssistantMessageID }
+        self.activeAssistantMessageID = nil
+        activeAssistantDraft = ""
     }
 
     private func handleServerEnvelope(_ envelope: ResolveKitEnvelope) async {
@@ -1010,6 +1126,7 @@ public final class ResolveKitRuntime: ObservableObject {
                     return
                 }
                 lastError = payload.message
+                presentChatPresentationError(rawMessage: payload.message)
                 if payload.message.lowercased().contains("timeout") {
                     finalizeUnresolvedToolCallsAsTimedOut(reason: payload.message)
                 }
@@ -1389,6 +1506,7 @@ public final class ResolveKitRuntime: ObservableObject {
 
     private func failTurn(_ message: String) {
         lastError = message
+        presentChatPresentationError(rawMessage: message)
         isTurnInProgress = false
         activeAssistantMessageID = nil
         connectionState = .failed
@@ -1398,9 +1516,7 @@ public final class ResolveKitRuntime: ObservableObject {
     private func presentChatUnavailable() {
         ResolveKitRuntimeLogger.log("Presenting generic unavailable message to chat UI")
         lastError = unavailableMessage
-        if messages.last?.role != .assistant || messages.last?.text != unavailableMessage {
-            messages.append(.init(role: .assistant, text: unavailableMessage))
-        }
+        presentChatPresentationError(rawMessage: unavailableMessage)
         isTurnInProgress = false
         activeAssistantDraft = ""
         activeAssistantMessageID = nil
@@ -1617,6 +1733,14 @@ extension ResolveKitRuntime {
 
     func _debugConsumeTransportFailure(_ message: String) async {
         await handleTransportFailure(message)
+    }
+
+    func _debugChatPresentationError() -> ResolveKitChatPresentationError? {
+        chatPresentationError
+    }
+
+    func _debugSetChatPresentationError(_ error: ResolveKitChatPresentationError?) {
+        chatPresentationError = error
     }
 }
 #endif

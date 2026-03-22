@@ -91,6 +91,58 @@ enum ResolveKitInitialPresentationScrollPolicy {
     }
 }
 
+enum ResolveKitThinkingIndicatorVisibilityPolicy {
+    static func shouldShowThinkingIndicator(
+        initialFetchCompleted: Bool,
+        isTurnInProgress: Bool,
+        toolChecklistCount: Int,
+        presentationError: ResolveKitChatPresentationError? = nil
+    ) -> Bool {
+        if presentationError?.hidesAssistantDraft == true {
+            return false
+        }
+
+        if !initialFetchCompleted {
+            return true
+        }
+
+        return isTurnInProgress && toolChecklistCount == 0
+    }
+}
+
+enum ResolveKitThinkingIndicatorTransition: Equatable {
+    case hide
+    case scheduleShow(delayMilliseconds: UInt64)
+}
+
+enum ResolveKitThinkingIndicatorTransitionPolicy {
+    static func transition(for isVisible: Bool) -> ResolveKitThinkingIndicatorTransition {
+        if isVisible {
+            return .scheduleShow(delayMilliseconds: 500)
+        }
+
+        return .hide
+    }
+}
+
+enum ResolveKitThinkingIndicatorMorphPolicy {
+    static func morphTargetAssistantID(
+        showThinkingIndicator: Bool,
+        initialFetchCompleted: Bool,
+        lastMessage: ResolveKitChatMessage?,
+        presentationError: ResolveKitChatPresentationError? = nil
+    ) -> UUID? {
+        if presentationError?.hidesAssistantDraft == true {
+            return nil
+        }
+
+        guard showThinkingIndicator else { return nil }
+        guard initialFetchCompleted else { return nil }
+        guard let lastMessage, lastMessage.role == .assistant else { return nil }
+        return lastMessage.id
+    }
+}
+
 enum ResolveKitChatComposerLayout {
     private static let closedBottomGap: CGFloat = 4
     private static let timelineBottomBreathingRoom: CGFloat = 12
@@ -139,6 +191,7 @@ public struct ResolveKitChatView: View {
         let messageCount: Int
         let lastMessageID: UUID?
         let toolBatchCount: Int
+        let presentationErrorMessage: String?
     }
     private enum TimelineEntry: Identifiable {
         case message(ResolveKitChatMessage)
@@ -201,7 +254,7 @@ public struct ResolveKitChatView: View {
                         }
                         .opacity(initialPresentationPhase.allowsLiveAutoScroll ? 1 : initialContentOpacity)
                     } else {
-                        Color.clear
+                        initialLoadingContent(contentTopInset: contentTopInset)
                     }
                 }
                 .ignoresSafeArea(edges: .top)
@@ -321,24 +374,8 @@ public struct ResolveKitChatView: View {
                 // Runtime already updates published error state.
             }
         }
-        .onChange(of: isThinkingVisibleRaw) { isVisible in
-            if !isVisible {
-                thinkingDelayTask?.cancel()
-                thinkingDelayTask = nil
-                withAnimation(.easeOut(duration: 0.18)) {
-                    showThinkingIndicator = false
-                }
-                return
-            }
-
-            thinkingDelayTask?.cancel()
-            thinkingDelayTask = Task { @MainActor in
-                await ResolveKitCompatibility.sleep(milliseconds: 500)
-                guard !Task.isCancelled, isThinkingVisibleRaw else { return }
-                withAnimation(.spring(response: 0.38, dampingFraction: 0.72, blendDuration: 0.12)) {
-                    showThinkingIndicator = true
-                }
-            }
+        .task(id: isThinkingVisibleRaw) {
+            await updateThinkingIndicatorVisibility(for: isThinkingVisibleRaw)
         }
         .onDisappear {
             thinkingDelayTask?.cancel()
@@ -351,29 +388,61 @@ public struct ResolveKitChatView: View {
         }
         .animation(
             .spring(response: 0.38, dampingFraction: 0.72, blendDuration: 0.12),
-            value: runtime.messages.map { $0.id.uuidString } + runtime.toolCallBatches.map { $0.id.uuidString }
+            value: runtime.messages.map { $0.id.uuidString }
+                + runtime.toolCallBatches.map { $0.id.uuidString }
+                + [runtime.chatPresentationError?.message ?? ""]
         )
     }
 
     private var isThinkingVisibleRaw: Bool {
-        runtime.isTurnInProgress && runtime.toolCallChecklist.isEmpty
+        ResolveKitThinkingIndicatorVisibilityPolicy.shouldShowThinkingIndicator(
+            initialFetchCompleted: runtime.initialFetchCompleted,
+            isTurnInProgress: runtime.isTurnInProgress,
+            toolChecklistCount: runtime.toolCallChecklist.count,
+            presentationError: runtime.chatPresentationError
+        )
     }
 
     private var shouldShowThinkingIndicator: Bool {
         showThinkingIndicator && morphTargetAssistantID == nil
     }
 
+    @MainActor
+    private func updateThinkingIndicatorVisibility(for isVisible: Bool) async {
+        switch ResolveKitThinkingIndicatorTransitionPolicy.transition(for: isVisible) {
+        case .hide:
+            thinkingDelayTask?.cancel()
+            thinkingDelayTask = nil
+            withAnimation(.easeOut(duration: 0.18)) {
+                showThinkingIndicator = false
+            }
+        case .scheduleShow(let delayMilliseconds):
+            thinkingDelayTask?.cancel()
+            thinkingDelayTask = Task { @MainActor in
+                await ResolveKitCompatibility.sleep(milliseconds: delayMilliseconds)
+                guard !Task.isCancelled, isThinkingVisibleRaw else { return }
+                withAnimation(.spring(response: 0.38, dampingFraction: 0.72, blendDuration: 0.12)) {
+                    showThinkingIndicator = true
+                }
+            }
+        }
+    }
+
     private var morphTargetAssistantID: UUID? {
-        guard showThinkingIndicator else { return nil }
-        guard let last = runtime.messages.last, last.role == .assistant else { return nil }
-        return last.id
+        ResolveKitThinkingIndicatorMorphPolicy.morphTargetAssistantID(
+            showThinkingIndicator: showThinkingIndicator,
+            initialFetchCompleted: runtime.initialFetchCompleted,
+            lastMessage: runtime.messages.last,
+            presentationError: runtime.chatPresentationError
+        )
     }
 
     private var scrollTrigger: ScrollTrigger {
         ScrollTrigger(
             messageCount: runtime.messages.count,
             lastMessageID: runtime.messages.last?.id,
-            toolBatchCount: runtime.toolCallBatches.count
+            toolBatchCount: runtime.toolCallBatches.count,
+            presentationErrorMessage: runtime.chatPresentationError?.message
         )
     }
 
@@ -438,6 +507,9 @@ public struct ResolveKitChatView: View {
             ForEach(timelineEntries) { entry in
                 timelineEntryView(entry)
             }
+            if let presentationError = runtime.chatPresentationError {
+                transientErrorBubble(presentationError)
+            }
             if shouldShowThinkingIndicator {
                 thinkingIndicator
                     .transition(
@@ -454,6 +526,22 @@ public struct ResolveKitChatView: View {
         .padding(.top, contentTopInset)
         .padding(.bottom, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func initialLoadingContent(contentTopInset: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let presentationError = runtime.chatPresentationError {
+                transientErrorBubble(presentationError)
+                    .padding(.top, contentTopInset)
+                    .padding(.horizontal, 16)
+            } else if shouldShowThinkingIndicator {
+                thinkingIndicator
+                    .padding(.top, contentTopInset)
+                    .padding(.horizontal, 16)
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func timelineEntryView(_ entry: TimelineEntry) -> some View {
@@ -513,6 +601,26 @@ public struct ResolveKitChatView: View {
                     properties: .frame,
                     anchor: .leading
                 )
+            Spacer(minLength: 24)
+        }
+    }
+
+    private func transientErrorBubble(_ error: ResolveKitChatPresentationError) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Something went wrong.")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(resolvedPalette.assistantBubbleTextColor)
+                Text(error.message)
+                    .foregroundStyle(resolvedPalette.assistantBubbleTextColor)
+                Text(error.recoverySuggestion)
+                    .font(.footnote)
+                    .foregroundStyle(resolvedPalette.assistantBubbleTextColor.opacity(0.82))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(resolvedPalette.assistantBubbleBackgroundColor)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
             Spacer(minLength: 24)
         }
     }
