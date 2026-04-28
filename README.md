@@ -9,7 +9,7 @@ ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS
 - iOS 16+ / macOS 12+
 - Swift 5.9+ toolchain
 - Xcode 15.0+
-- A running [ResolveKit backend](https://github.com/nedasvi/playbook_backend) with a valid API key
+- A running [ResolveKit backend](https://github.com/resolve-kit/resolvekit-backend) with a valid API key
 
 ---
 
@@ -20,14 +20,14 @@ ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS
 Add the package in Xcode via **File → Add Package Dependencies**, then enter the repository URL:
 
 ```
-https://github.com/Nights-Are-Late/resolvekit-ios-sdk
+https://github.com/resolve-kit/resolvekit-ios-sdk
 ```
 
 Or add it manually to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/Nights-Are-Late/resolvekit-ios-sdk", from: "1.4.2")
+    .package(url: "https://github.com/resolve-kit/resolvekit-ios-sdk", from: "1.4.2")
 ],
 targets: [
     .target(
@@ -344,7 +344,7 @@ func perform(...) async throws -> Void { ... }         // ✅ (sends null)
 
 ```swift
 ResolveKitConfiguration(
-    baseURL: URL = URL(string: "https://agent.resolvekit.app")!,
+    baseURL: URL = URL(string: "https://agent.example.com")!,
     apiKeyProvider: @Sendable () -> String?,
     deviceIDProvider: @Sendable () -> String? = { nil },
     llmContextProvider: @Sendable () -> JSONObject = { [:] },
@@ -358,7 +358,7 @@ ResolveKitConfiguration(
 
 ### `baseURL`
 
-**Type:** `URL` | **Required:** No | **Default:** `https://agent.resolvekit.app`
+**Type:** `URL` | **Required:** No | **Default:** `https://agent.example.com`
 
 Base URL of the ResolveKit backend. Override only when self-hosting:
 

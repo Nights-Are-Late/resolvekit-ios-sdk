@@ -1071,12 +1071,12 @@ private final class ResolveKitStartupHTTPStub: URLProtocol, @unchecked Sendable 
 
 @Suite("Configuration: llm context provider")
 struct ResolveKitConfigurationLLMContextTests {
-    @Test("Configuration defaults to production agent URL")
-    func configurationDefaultsToProductionAgentURL() {
-        #expect(ResolveKitDefaults.baseURL.absoluteString == "https://agent.resolvekit.app")
+    @Test("Configuration defaults to neutral self-hostable agent URL")
+    func configurationDefaultsToNeutralSelfHostableAgentURL() {
+        #expect(ResolveKitDefaults.baseURL.absoluteString == "https://agent.example.com")
 
         let config = ResolveKitConfiguration(apiKeyProvider: { "key" })
-        #expect(config.baseURL.absoluteString == "https://agent.resolvekit.app")
+        #expect(config.baseURL.absoluteString == "https://agent.example.com")
     }
 
     @Test("Configuration keeps explicit custom base URL")

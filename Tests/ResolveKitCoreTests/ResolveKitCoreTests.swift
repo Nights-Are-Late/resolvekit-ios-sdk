@@ -125,10 +125,20 @@ struct ResolveKitOpenSourcePackageContractTests {
     @Test("README package example references the latest source release")
     func readmeReferencesSourceRelease() throws {
         let readme = try String(contentsOf: sdkRoot.appendingPathComponent("README.md"))
-        #expect(readme.contains(".package(url: \"https://github.com/Nights-Are-Late/resolvekit-ios-sdk\", from: \"1.4.2\")"))
+        #expect(readme.contains(".package(url: \"https://github.com/resolve-kit/resolvekit-ios-sdk\", from: \"1.4.2\")"))
+        #expect(readme.contains("[ResolveKit backend](https://github.com/resolve-kit/resolvekit-backend)"))
         #expect(readme.contains("- iOS 16+ / macOS 12+"))
         #expect(readme.contains("- Swift 5.9+ toolchain"))
         #expect(readme.contains("apps that remain in Swift 5 language mode"))
+    }
+
+    @Test("Repository includes OSS governance files")
+    func repositoryIncludesOSSGovernanceFiles() {
+        let requiredFiles = ["LICENSE", "CONTRIBUTING.md", "SECURITY.md", "CODE_OF_CONDUCT.md"]
+        for requiredFile in requiredFiles {
+            let path = sdkRoot.appendingPathComponent(requiredFile).path
+            #expect(FileManager.default.fileExists(atPath: path))
+        }
     }
 
     @Test("Package remains source-based without alternate packaged targets")

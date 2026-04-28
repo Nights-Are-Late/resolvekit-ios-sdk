@@ -2,7 +2,7 @@ import Foundation
 import ResolveKitCore
 
 public enum ResolveKitDefaults {
-    public static let baseURL = URL(string: "https://agent.resolvekit.app")!
+    public static let baseURL = URL(string: "https://agent.example.com")!
     public static let sdkName = "resolvekit-ios-sdk"
     public static let sdkVersion = "1.4.2"
 }
