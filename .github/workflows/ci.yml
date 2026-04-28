@@ -20,6 +20,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Validate agent-facing docs map
+        run: bash scripts/check_agent_docs.sh
+
       - name: Show Swift version
         run: swift --version
 
