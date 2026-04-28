@@ -16,7 +16,7 @@ let package = Package(
         .plugin(name: "ResolveKitPlugin", targets: ["ResolveKitPlugin"])
     ],
     dependencies: [
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "509.0.0")
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "603.0.1")
     ],
     targets: [
         .target(
