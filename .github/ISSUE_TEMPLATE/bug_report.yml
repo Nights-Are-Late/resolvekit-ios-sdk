@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible SDK bug or regression.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include steps, sample code, and target platform details.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Xcode version, Swift version, target iOS or macOS version, simulator or device.
+    validations:
+      required: true
