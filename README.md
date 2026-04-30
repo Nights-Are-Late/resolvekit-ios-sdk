@@ -1,6 +1,13 @@
 # ResolveKit iOS SDK
 
-ResolveKit is a Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps. The SDK connects your app to a ResolveKit backend over an HTTP/3-first session event stream, replays in-flight turns after reconnects, and dispatches tool calls to native Swift functions you define. Use it when you want a conversational agent that can call device-side code (APIs, Keychain, platform services) on the user's behalf.
+[![CI](https://github.com/resolve-kit/resolvekit-ios-sdk/actions/workflows/ci.yml/badge.svg)](https://github.com/resolve-kit/resolvekit-ios-sdk/actions/workflows/ci.yml)
+[![Swift Package Index](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fresolve-kit%2Fresolvekit-ios-sdk%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/resolve-kit/resolvekit-ios-sdk)
+[![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fresolve-kit%2Fresolvekit-ios-sdk%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/resolve-kit/resolvekit-ios-sdk)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
+Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps.
+
+**Support is moving into the product. ResolveKit is where it lands.** The SDK connects your app to a ResolveKit backend over an HTTP/3-first session event stream, replays in-flight turns after reconnects, and dispatches tool calls to native Swift functions you define. Use it when you want a conversational agent that can call device-side code (APIs, Keychain, platform services) on the user's behalf.
 
 ---
 
