@@ -1,0 +1,14 @@
+---
+title: "ResolveKit iOS SDK"
+---
+ResolveKit iOS SDK - Embedded AI resolution framework for iOS/macOS.
+
+Key files:
+- README.md: Integration guide and API reference
+- CHANGELOG.md: Version history
+- Sources/ResolveKitUI/ResolveKitRuntime.swift: Main runtime
+- Sources/ResolveKitAuthoring/ResolveKitAuthoring.swift: @ResolveKit macro declaration
+- Sources/ResolveKitMacros/ResolveKitMacro.swift: Macro implementation
+
+Quick start: Add SPM dependency, use @ResolveKit macro on functions, present ResolveKitChatView.
+Requires: iOS 15+, Swift 5.9+

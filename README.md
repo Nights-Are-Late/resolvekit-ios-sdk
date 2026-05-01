@@ -250,7 +250,14 @@ struct SendMessage: ResolveKitFunction {
     ]
 
     public static func invoke(arguments: JSONObject, context: ResolveKitFunctionContext) async throws -> JSONValue {
-        // decodes arguments, calls perform(), encodes result
+        do {
+            let output = try await Self().perform(
+                // coerced arguments
+            )
+            return try _resolveKitEncode(output)
+        } catch {
+            throw ResolveKitFunctionError.invalidArguments(error.localizedDescription)
+        }
     }
 }
 
@@ -648,8 +655,9 @@ The SDK keeps one persistent event stream per session, resumes it with the last 
 
 ```
 Sources/
-  ResolveKitCore/        Protocols, registry, JSON types, TypeResolver, macro declaration
-  ResolveKitMacros/      Swift compiler plugin — @ResolveKit expansion
+  ResolveKitCore/        Protocols, registry, JSON types, TypeResolver, definitions
+  ResolveKitAuthoring/   @ResolveKit macro declaration, ResolveKitFunction protocol
+  ResolveKitMacros/      Swift compiler plugin -- @ResolveKit expansion
   ResolveKitNetworking/  HTTP (function registration, session, event stream)
   ResolveKitUI/          ResolveKitRuntime, ResolveKitChatView, ResolveKitChatViewController, Configuration
   ResolveKitCodegen/     Build-time CLI that generates ResolveKitAutoRegistry.swift
