@@ -11,6 +11,59 @@ Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps.
 
 ---
 
+## Preview
+
+| Chat View | Tool Approval | Connection States |
+|-----------|--------------|-------------------|
+| ![Chat View](docs/assets/screenshot-chat.png) | ![Tool Approval](docs/assets/screenshot-approval.png) | ![Connection States](docs/assets/screenshot-connection.png) |
+| *Streaming chat with rich message rendering* | *Batch approval UI for function calls* | *Live reconnect with exponential backoff* |
+
+> **Note:** Screenshot placeholders — replace `docs/assets/screenshot-*.png` with actual captures. See [Example/](Example/) for a runnable demo app you can screenshot.
+
+---
+
+## Architecture
+
+```mermaid
+sequenceDiagram
+    participant App as iOS/macOS App
+    participant SDK as ResolveKit SDK
+    participant Backend as ResolveKit Backend
+    participant LLM as LLM Router
+
+    App->>SDK: ResolveKitRuntime(configuration:)
+    SDK->>Backend: POST /v1/sessions (register functions)
+    Backend-->>SDK: session_id + tool definitions
+    SDK->>Backend: GET /events (persistent stream)
+    Backend-->>SDK: stream open
+
+    loop User Turn
+        App->>SDK: sendMessage("...")
+        SDK->>Backend: POST /messages
+        Backend->>LLM: Route + classify
+        LLM-->>Backend: response + tool_call_request(s)
+        Backend-->>SDK: assistant_text_delta (stream)
+        SDK-->>App: UI updates (streaming text)
+
+        alt Tool Call Required
+            Backend-->>SDK: tool_call_request events
+            SDK->>App: Show approval UI (batch ~250ms)
+            App->>SDK: Approve / Decline
+            SDK->>Backend: POST /tool-results
+            Backend->>LLM: Tool results
+            LLM-->>Backend: Final response
+            Backend-->>SDK: assistant_text_delta
+            SDK-->>App: Final rendered response
+        end
+
+        Backend-->>SDK: turn_complete
+    end
+
+    Note over SDK,Backend: Auto-reconnect on disconnect<br/>with exponential backoff (1s→30s)
+```
+
+---
+
 ## Requirements
 
 - iOS 16+ / macOS 12+
