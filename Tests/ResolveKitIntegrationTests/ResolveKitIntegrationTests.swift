@@ -107,7 +107,7 @@ struct ResolveKitNetworkingDebugTests {
     func summarizesInvalidAPIKeyResponse() {
         let client = ResolveKitAPIClient(
             baseURL: URL(string: "http://localhost:8000")!,
-            apiKeyProvider: { "iaa_test_key" }
+            apiKeyProvider: { "rk_test_key" }
         )
         let summary = client.debugServerErrorSummary(
             statusCode: 401,
@@ -121,7 +121,7 @@ struct ResolveKitNetworkingDebugTests {
     func summarizesChatUnavailableCodeResponse() {
         let client = ResolveKitAPIClient(
             baseURL: URL(string: "http://localhost:8000")!,
-            apiKeyProvider: { "iaa_test_key" }
+            apiKeyProvider: { "rk_test_key" }
         )
         let summary = client.debugServerErrorSummary(
             statusCode: 403,
@@ -136,7 +136,7 @@ struct ResolveKitNetworkingDebugTests {
     func eventStreamClientUsesLongLivedSessionTimeouts() {
         let client = ResolveKitAPIClient(
             baseURL: URL(string: "http://localhost:8000")!,
-            apiKeyProvider: { "iaa_test_key" }
+            apiKeyProvider: { "rk_test_key" }
         )
         let eventStream = ResolveKitEventStreamClient(apiClient: client)
         let configuration = eventStream._debugSessionConfiguration()
@@ -1073,10 +1073,18 @@ private final class ResolveKitStartupHTTPStub: URLProtocol, @unchecked Sendable 
 struct ResolveKitConfigurationLLMContextTests {
     @Test("Configuration defaults to neutral self-hostable agent URL")
     func configurationDefaultsToNeutralSelfHostableAgentURL() {
-        #expect(ResolveKitDefaults.baseURL.absoluteString == "https://agent.example.com")
+        #expect(ResolveKitDefaults.baseURL.absoluteString == ResolveKitDefaults.fallbackBaseURLString)
 
         let config = ResolveKitConfiguration(apiKeyProvider: { "key" })
-        #expect(config.baseURL.absoluteString == "https://agent.example.com")
+        #expect(config.baseURL.absoluteString == ResolveKitDefaults.fallbackBaseURLString)
+    }
+
+    @Test("Default base URL can be overridden via environment")
+    func configurationDefaultBaseURLSupportsEnvironmentOverride() {
+        let resolved = ResolveKitDefaults.resolveBaseURL(
+            environment: [ResolveKitDefaults.baseURLEnvironmentKey: "https://agent.selfhost.example.com"]
+        )
+        #expect(resolved.absoluteString == "https://agent.selfhost.example.com")
     }
 
     @Test("Configuration keeps explicit custom base URL")

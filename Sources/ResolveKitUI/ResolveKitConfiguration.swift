@@ -2,7 +2,19 @@ import Foundation
 import ResolveKitCore
 
 public enum ResolveKitDefaults {
-    public static let baseURL = URL(string: "https://agent.example.com")!
+    static let baseURLEnvironmentKey = "RESOLVEKIT_BASE_URL"
+    static let fallbackBaseURLString = "https://agent.example.com"
+
+    static func resolveBaseURL(environment: [String: String] = ProcessInfo.processInfo.environment) -> URL {
+        if let raw = environment[baseURLEnvironmentKey]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !raw.isEmpty,
+           let parsed = URL(string: raw) {
+            return parsed
+        }
+        return URL(string: fallbackBaseURLString)!
+    }
+
+    public static let baseURL = resolveBaseURL()
     public static let sdkName = "resolvekit-ios-sdk"
     public static let sdkVersion = "1.4.2"
 }

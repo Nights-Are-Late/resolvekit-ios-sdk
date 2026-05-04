@@ -85,7 +85,7 @@ struct GetLocalTime: ResolveKitFunction {
 import ResolveKitUI
 
 let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
-    apiKeyProvider: { "iaa_your_api_key" },
+    apiKeyProvider: { "rk_your_api_key" },
     functions: [GetLocalTime.self]
 ))
 ```
@@ -100,7 +100,7 @@ import ResolveKitUI
 
 struct ContentView: View {
     @StateObject private var runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
-        apiKeyProvider: { "iaa_your_api_key" },
+        apiKeyProvider: { "rk_your_api_key" },
         functions: [GetLocalTime.self]
     ))
 
@@ -123,7 +123,7 @@ import ResolveKitUI
 
 final class ChatHostViewController: UIViewController {
     private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
-        apiKeyProvider: { "iaa_your_api_key" },
+        apiKeyProvider: { "rk_your_api_key" },
         functions: [GetLocalTime.self]
     ))
 
@@ -139,7 +139,7 @@ Convenience init:
 
 ```swift
 let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
-    apiKeyProvider: { "iaa_your_api_key" },
+    apiKeyProvider: { "rk_your_api_key" },
     functions: [GetLocalTime.self]
 ))
 ```
@@ -156,7 +156,7 @@ import ResolveKitUI
 
 final class ChatHostViewController: NSViewController {
     private let runtime = ResolveKitRuntime(configuration: ResolveKitConfiguration(
-        apiKeyProvider: { "iaa_your_api_key" },
+        apiKeyProvider: { "rk_your_api_key" },
         functions: [GetLocalTime.self]
     ))
 
@@ -171,7 +171,7 @@ Convenience init:
 
 ```swift
 let chat = ResolveKitChatViewController(configuration: ResolveKitConfiguration(
-    apiKeyProvider: { "iaa_your_api_key" },
+    apiKeyProvider: { "rk_your_api_key" },
     functions: [GetLocalTime.self]
 ))
 ```
@@ -358,7 +358,7 @@ func perform(...) async throws -> Void { ... }         // ✅ (sends null)
 
 ```swift
 ResolveKitConfiguration(
-    baseURL: URL = URL(string: "https://agent.example.com")!,
+    baseURL: URL = ResolveKitDefaults.baseURL,
     apiKeyProvider: @Sendable () -> String?,
     deviceIDProvider: @Sendable () -> String? = { nil },
     llmContextProvider: @Sendable () -> JSONObject = { [:] },
@@ -372,9 +372,9 @@ ResolveKitConfiguration(
 
 ### `baseURL`
 
-**Type:** `URL` | **Required:** No | **Default:** `https://agent.example.com`
+**Type:** `URL` | **Required:** No | **Default:** `ResolveKitDefaults.baseURL`
 
-Base URL of the ResolveKit backend. Override only when self-hosting:
+Base URL of the ResolveKit backend. By default, `ResolveKitDefaults.baseURL` reads `RESOLVEKIT_BASE_URL` from the process environment and falls back to `https://agent.example.com`. Override only when self-hosting:
 
 ```swift
 baseURL: URL(string: "https://your-backend.example.com")!
