@@ -4,6 +4,7 @@
 [![Swift Package Index](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fresolve-kit%2Fresolvekit-ios-sdk%2Fbadge%3Ftype%3Dswift-versions)](https://swiftpackageindex.com/resolve-kit/resolvekit-ios-sdk)
 [![Platforms](https://img.shields.io/endpoint?url=https%3A%2F%2Fswiftpackageindex.com%2Fapi%2Fpackages%2Fresolve-kit%2Fresolvekit-ios-sdk%2Fbadge%3Ftype%3Dplatforms)](https://swiftpackageindex.com/resolve-kit/resolvekit-ios-sdk)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![CocoaPods](https://img.shields.io/cocoapods/v/ResolveKit.svg)](https://cocoapods.org/pods/ResolveKit)
 
 Swift SDK for embedding LLM-driven agent chat experiences in iOS and macOS apps.
 
