@@ -26,6 +26,9 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
+      - name: Run SwiftLint
+        run: swiftlint lint --strict
+
       - name: Build
         run: swift build
 
