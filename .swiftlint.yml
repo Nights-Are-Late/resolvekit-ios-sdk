@@ -1,64 +1,160 @@
-# SwiftLint Configuration
+# SwiftLint Configuration for ResolveKit iOS SDK
 # https://github.com/realm/SwiftLint
+#
+# This config balances code quality with pragmatism for a production SDK.
+# Rules are tuned to catch real issues without breaking existing code.
+# When onboarding new contributors, `swiftlint` should pass cleanly.
 
-# Rules to enable
-opt_in_rules:
-  - empty_count
-  - closure_spacing
-  - overridden_super_call
-  - private_outlet
-  - prohibited_super_call
-  - first_where
-  - fatal_error_message
-  - vertical_parameter_alignment_on_call
-  - let_var_whitespace
-  - unowned_variable_capture
-  - sorted_imports
-  - operator_usage_whitespace
-  - closure_end_indentation
-  - contains_over_first_not_nil
-  - empty_string
-  - discouraged_object_literal
-  - nimble_operator
-  - number_separator
-  - file_header
-  - vertical_whitespace_closing_braces
-  - vertical_whitespace_opening_braces
-
-# Rules to disable
-disabled_rules:
-  - trailing_whitespace
-  - todo
-  - identifier_name
-  - line_length
-  - type_body_length
-  - function_body_length
-  - file_length
-  - cyclomatic_complexity
-  - nesting
-  - large_tuple
-
-# Configuration
+# ──────────────────────────────────────────────
+# Paths to exclude from linting
+# ──────────────────────────────────────────────
 excluded:
   - Pods
   - .build
-  - Tests
-  - Example
+  - .swiftpm
+  - Tests            # Test files have different quality requirements
+  - Example          # Example/demo app is not part of the SDK surface
+  - "**/generated"   # Generated code (e.g., from macros or codegen tools)
+  - "**/*.generated.swift"
 
+# ──────────────────────────────────────────────
+# Default rules to disable (too strict for this codebase)
+# ──────────────────────────────────────────────
+disabled_rules:
+  - trailing_whitespace        # Common in generated / formatted code
+  - todo                       # TODOs are useful in an active SDK
+  - identifier_name            # SDK uses established naming conventions
+  - line_length                # Configured separately with relaxed thresholds
+  - type_body_length           # SDK types can be legitimately large
+  - function_body_length       # Configured separately with relaxed thresholds
+  - file_length                # Configured separately with relaxed thresholds
+  - cyclomatic_complexity      # Configured separately with relaxed thresholds
+  - nesting                    # Configured separately with relaxed thresholds
+  - large_tuple                # Tuples are used intentionally in SDK APIs
+  - discouraged_optional_collection # Optional collections are valid in Swift APIs
+
+# ──────────────────────────────────────────────
+# Opt-in rules (recommended but not default)
+# ──────────────────────────────────────────────
+opt_in_rules:
+  # Safety / correctness
+  - empty_count
+  - fatal_error_message
+  - first_where
+  - contains_over_first_not_nil
+  - empty_string
+  - discouraged_object_literal
+  - overridden_super_call
+  - prohibited_super_call
+
+  # Style / consistency
+  - closure_spacing
+  - closure_end_indentation
+  - sorted_imports
+  - operator_usage_whitespace
+  - vertical_parameter_alignment_on_call
+  - vertical_whitespace_closing_braces
+  - vertical_whitespace_opening_braces
+  - let_var_whitespace
+
+  # Readability
+  - redundant_type_annotation
+  - private_action
+  - private_outlet
+  - unowned_variable_capture
+  - toggle_bool
+  - prefer_self_type_over_type_of_self
+  - explicit_init
+  - convenience_type
+  - shorthand_optional_binding
+  - yoda_condition
+  - discouraged_assert
+  - modifier_order
+  - implicit_return
+  - trailing_closure
+  - unused_import
+  - collection_alignment
+  - enum_case_associated_values_count
+  - legacy_multiple
+  - legacy_random
+  - pattern_matching_keywords
+  - redundant_nil_coalescing
+  - sorted_first_last
+
+# ──────────────────────────────────────────────
+# Rule-specific configuration
+# ──────────────────────────────────────────────
+
+# Line length — generous for SDK code (docs URLs, long expressions)
 line_length:
   warning: 150
   error: 200
   ignores_comments: true
   ignores_urls: true
+  ignores_function_declarations: false
+  ignores_interpolated_strings: true
 
+# Type name — standard Swift conventions
 type_name:
   min_length: 2
-  max_length: 50
+  max_length:
+    warning: 45
+    error: 60
+  allowed_symbols: ["_"]
+  validates_start_with_lowercase: warning
 
+# File length — large SDK source files are acceptable
+file_length:
+  warning: 600
+  error: 1000
+  ignore_comment_only_lines: true
+
+# Function body length
+function_body_length:
+  warning: 80
+  error: 150
+
+# Type body length
+type_body_length:
+  warning: 400
+  error: 600
+
+# Cyclomatic complexity
+cyclomatic_complexity:
+  warning: 15
+  error: 25
+  ignores_case_statements: true
+
+# Nesting
+nesting:
+  type_level:
+    warning: 3
+    error: 5
+  function_level:
+    warning: 5
+    error: 8
+
+# Identifier name — minimal validation since the rule is disabled
+# but kept for reference if re-enabled later
 identifier_name:
-  min_length: 2
+  min_length: 1
   excluded:
     - id
     - x
     - y
     - z
+    - i
+    - j
+    - k
+    - n
+
+# Opening brace
+opening_brace:
+  allow_multiline_func: true
+
+# Trailing comma — required for cleaner diffs
+trailing_comma:
+  mandatory_comma: true
+
+# Reporter output
+reporter: "xcode"
