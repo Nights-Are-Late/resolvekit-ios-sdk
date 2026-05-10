@@ -19,7 +19,14 @@ ResolveKit iOS SDK embeds agent chat and native tool execution inside iOS/macOS 
 
 ## Agent Skills
 
-This repo ships with integration skills in `.agents/skills/`. Load them when relevant:
+ResolveKit integration skills are available at https://github.com/resolve-kit/resolvekit-skills
+
+**Quick install:**
+```bash
+curl -sL https://raw.githubusercontent.com/resolve-kit/resolvekit-skills/master/install.sh | bash -s .
+```
+
+**Platform-specific skills:**
 
 - `resolvekit-ios-integration` — How to integrate this SDK into an iOS/macOS project. Covers SPM installation, `@ResolveKit` macro function authoring, runtime configuration, SwiftUI/UIKit/AppKit UI integration, and troubleshooting.
 - `resolvekit-agent-instructions` — How AI agents should approach ResolveKit integration. Covers project detection, function design patterns, integration order, and verification.
