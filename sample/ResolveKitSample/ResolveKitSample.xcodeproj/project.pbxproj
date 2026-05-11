@@ -10,12 +10,27 @@
 		0CC54BF2F8C94C11B0B2D1D3 /* ResolveKitAuthoring in Frameworks */ = {isa = PBXBuildFile; productRef = EB626BEB2B428095CB11E96A /* ResolveKitAuthoring */; };
 		488ADD3387E0F68C70BE14F8 /* ResolveKitUI in Frameworks */ = {isa = PBXBuildFile; productRef = 771ED75DBFC3521DCA9645BE /* ResolveKitUI */; };
 		5BE27937BDEF4B59D2397692 /* ResolveKitSampleApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7582A1339D93778B77BF15C1 /* ResolveKitSampleApp.swift */; };
+		A045CBC63E414CCD000DB1AD /* ResolveKitUI in Embed Frameworks */ = {isa = PBXBuildFile; productRef = 771ED75DBFC3521DCA9645BE /* ResolveKitUI */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		288FAACF84B6305CBD85B53E /* Embed Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				A045CBC63E414CCD000DB1AD /* ResolveKitUI in Embed Frameworks */,
+			);
+			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		6B4A51882D1846F8F88FC027 /* resolvekit-ios-sdk */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "resolvekit-ios-sdk"; path = ../..; sourceTree = SOURCE_ROOT; };
 		7582A1339D93778B77BF15C1 /* ResolveKitSampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolveKitSampleApp.swift; sourceTree = "<group>"; };
-		8A1BDE9C6D01321501410A97 /* ResolveKitSample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ResolveKitSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8A1BDE9C6D01321501410A97 /* ResolveKitSample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ResolveKitSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -73,6 +88,7 @@
 			buildPhases = (
 				C7D084C12C35E13BDD555AC0 /* Sources */,
 				387DA660C306545CB6EC7670 /* Frameworks */,
+				288FAACF84B6305CBD85B53E /* Embed Frameworks */,
 			);
 			buildRules = (
 			);
@@ -95,6 +111,8 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+				};
 			};
 			buildConfigurationList = A6D7D66295F203E095C274F2 /* Build configuration list for PBXProject "ResolveKitSample" */;
 			developmentRegion = en;
@@ -256,7 +274,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = R73KJ452C5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "ResolveKit Sample";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
@@ -279,7 +296,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				DEVELOPMENT_TEAM = R73KJ452C5;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = "ResolveKit Sample";
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
