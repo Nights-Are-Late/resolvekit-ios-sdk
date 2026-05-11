@@ -38,3 +38,4 @@ When a user asks to integrate ResolveKit into their iOS project, load `resolveki
 1. `Package.swift` for project structure and dependencies.
 2. `Sources/` for module organization.
 3. `Tests/` for test patterns and coverage expectations.
+4. `sample/ResolveKitSample/` for the reference iOS sample app flow.

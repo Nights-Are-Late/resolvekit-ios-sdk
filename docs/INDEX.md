@@ -10,6 +10,7 @@ This index is optimized for engineers and coding agents.
 ## Product and Architecture
 
 - [Repository README](../README.md)
+- [iOS Sample App](../sample/ResolveKitSample/README.md)
 
 ## Planning and Change History
 

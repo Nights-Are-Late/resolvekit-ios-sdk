@@ -1,0 +1,35 @@
+name: ResolveKitSample
+options:
+  minimumXcodeGenVersion: 2.45.0
+configs:
+  Debug: debug
+  Release: release
+settings:
+  base:
+    PRODUCT_BUNDLE_IDENTIFIER: app.resolvekit.sample.ios
+    IPHONEOS_DEPLOYMENT_TARGET: 16.0
+    SWIFT_VERSION: 5.9
+targets:
+  ResolveKitSample:
+    type: application
+    platform: iOS
+    deploymentTarget: "16.0"
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_NAME: ResolveKitSample
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
+        INFOPLIST_KEY_CFBundleDisplayName: ResolveKit Sample
+    dependencies:
+      - package: resolvekit-ios-sdk
+        product: ResolveKitUI
+      - package: resolvekit-ios-sdk
+        product: ResolveKitAuthoring
+packages:
+  resolvekit-ios-sdk:
+    path: ../..

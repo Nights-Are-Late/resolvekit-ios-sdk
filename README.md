@@ -749,6 +749,28 @@ Import only what you need:
 
 ---
 
+## Sample App
+
+The repository includes a reference iOS sample app at `sample/ResolveKitSample`.
+
+It mirrors the Android sample structure:
+
+1. Configuration screen where host URL + API key are required before continue.
+2. Capabilities screen with supported tool calls, test prompts, and an `Open Chat` CTA.
+3. Visible host-app state that changes after tool calls (vibe, mascot, confetti, laser state).
+
+Run it locally:
+
+```bash
+cd sample/ResolveKitSample
+xcodegen generate
+open ResolveKitSample.xcodeproj
+```
+
+Then run the `ResolveKitSample` scheme on an iOS Simulator.
+
+---
+
 ## Running Tests
 
 ```bash
