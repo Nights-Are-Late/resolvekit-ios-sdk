@@ -29,8 +29,9 @@
 
 /* Begin PBXFileReference section */
 		6B4A51882D1846F8F88FC027 /* resolvekit-ios-sdk */ = {isa = PBXFileReference; lastKnownFileType = folder; name = "resolvekit-ios-sdk"; path = ../..; sourceTree = SOURCE_ROOT; };
+		7019946EE76AC378F5FB3A18 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7582A1339D93778B77BF15C1 /* ResolveKitSampleApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ResolveKitSampleApp.swift; sourceTree = "<group>"; };
-		8A1BDE9C6D01321501410A97 /* ResolveKitSample.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = ResolveKitSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		8A1BDE9C6D01321501410A97 /* ResolveKitSample.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ResolveKitSample.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -58,6 +59,7 @@
 		10DA8A3ACA2A6C975574D285 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				7019946EE76AC378F5FB3A18 /* Info.plist */,
 				7582A1339D93778B77BF15C1 /* ResolveKitSampleApp.swift */,
 			);
 			path = Sources;
@@ -111,8 +113,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-				};
 			};
 			buildConfigurationList = A6D7D66295F203E095C274F2 /* Build configuration list for PBXProject "ResolveKitSample" */;
 			developmentRegion = en;
@@ -274,12 +274,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "ResolveKit Sample";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				DEVELOPMENT_TEAM = R73KJ452C5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -297,12 +294,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = "ResolveKit Sample";
-				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
-				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
-				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = UIInterfaceOrientationPortrait;
+				DEVELOPMENT_TEAM = R73KJ452C5;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Sources/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",

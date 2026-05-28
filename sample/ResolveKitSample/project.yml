@@ -16,16 +16,25 @@ targets:
     deploymentTarget: "16.0"
     sources:
       - Sources
+    info:
+      path: Sources/Info.plist
+      properties:
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        UIApplicationSupportsIndirectInputEvents: true
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations~iphone:
+          - UIInterfaceOrientationPortrait
+        CFBundleDisplayName: ResolveKit Sample
+        # Allow plain HTTP for staging/local dev environments
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
     settings:
       base:
         PRODUCT_NAME: ResolveKitSample
-        GENERATE_INFOPLIST_FILE: YES
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/Info.plist
         SUPPORTS_MACCATALYST: YES
-        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
-        INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents: YES
-        INFOPLIST_KEY_UILaunchScreen_Generation: YES
-        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
-        INFOPLIST_KEY_CFBundleDisplayName: ResolveKit Sample
     dependencies:
       - package: resolvekit-ios-sdk
         product: ResolveKitUI
